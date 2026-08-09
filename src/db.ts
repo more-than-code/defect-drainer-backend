@@ -4,6 +4,9 @@ import { DatabaseSync } from 'node:sqlite';
 
 export type Db = DatabaseSync;
 
+// rebuildDefectsFts imported lazily inside ensureDefectsFts to avoid cycle
+// (analytics imports db helpers)
+
 const SCHEMA = `
 PRAGMA foreign_keys = ON;
 
@@ -69,6 +72,52 @@ CREATE TABLE IF NOT EXISTS batches (
 );
 
 CREATE INDEX IF NOT EXISTS idx_batches_app ON batches(app_id);
+
+CREATE INDEX IF NOT EXISTS idx_defects_severity ON defects(severity);
+CREATE INDEX IF NOT EXISTS idx_defects_area ON defects(area);
+CREATE INDEX IF NOT EXISTS idx_defects_source ON defects(source);
+
+/** Phase A analytics: structured prompt/job events (not log scrapes). */
+CREATE TABLE IF NOT EXISTS prompt_use (
+  id TEXT PRIMARY KEY,
+  prompt_key TEXT NOT NULL,
+  prompt_version TEXT NOT NULL DEFAULT '1',
+  job_id TEXT,
+  batch_id TEXT,
+  app_id TEXT NOT NULL DEFAULT '',
+  defect_ids_json TEXT NOT NULL DEFAULT '[]',
+  outcome TEXT NOT NULL DEFAULT 'unknown',
+  runner TEXT NOT NULL DEFAULT '',
+  body_text TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_prompt_use_app ON prompt_use(app_id);
+CREATE INDEX IF NOT EXISTS idx_prompt_use_key ON prompt_use(prompt_key);
+CREATE INDEX IF NOT EXISTS idx_prompt_use_job ON prompt_use(job_id);
+CREATE INDEX IF NOT EXISTS idx_prompt_use_created ON prompt_use(created_at);
+
+/** Phase A: denormalized batch job rows for SQL harness analytics. */
+CREATE TABLE IF NOT EXISTS job_summary (
+  job_id TEXT PRIMARY KEY,
+  batch_id TEXT NOT NULL DEFAULT '',
+  app_id TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT '',
+  mode TEXT NOT NULL DEFAULT '',
+  defect_count INTEGER NOT NULL DEFAULT 0,
+  pr_created INTEGER NOT NULL DEFAULT 0,
+  pr_merged INTEGER NOT NULL DEFAULT 0,
+  pr_open INTEGER NOT NULL DEFAULT 0,
+  error TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  completed_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_job_summary_app ON job_summary(app_id);
+CREATE INDEX IF NOT EXISTS idx_job_summary_status ON job_summary(status);
+CREATE INDEX IF NOT EXISTS idx_job_summary_created ON job_summary(created_at);
 `;
 
 export function resolveDbPath(dataRoot: string): string {
@@ -83,6 +132,7 @@ export function openDatabase(dataRoot: string): Db {
   db.exec('PRAGMA foreign_keys = ON;');
   db.exec(SCHEMA);
   migrateAppColumns(db);
+  ensureDefectsFts(db);
   return db;
 }
 
@@ -96,6 +146,49 @@ function migrateAppColumns(db: Db): void {
     db.exec(
       `ALTER TABLE apps ADD COLUMN grok_sandbox TEXT NOT NULL DEFAULT 'strict'`,
     );
+  }
+}
+
+/** FTS5 index for Phase A defect find (title/summary/body). */
+function ensureDefectsFts(db: Db): void {
+  db.exec(`
+    CREATE VIRTUAL TABLE IF NOT EXISTS defects_fts USING fts5(
+      id UNINDEXED,
+      app_id UNINDEXED,
+      title,
+      summary,
+      body,
+      tokenize = 'porter unicode61'
+    );
+  `);
+  try {
+    const ftsCount = Number(
+      (db.prepare(`SELECT COUNT(*) AS c FROM defects_fts`).get() as { c: number })
+        .c,
+    );
+    const defCount = Number(
+      (db.prepare(`SELECT COUNT(*) AS c FROM defects`).get() as { c: number }).c,
+    );
+    if (defCount > 0 && ftsCount === 0) {
+      // Dynamic import avoided — inline rebuild to keep startup sync
+      const rows = db
+        .prepare(`SELECT id, app_id, title, summary, body FROM defects`)
+        .all() as Array<{
+        id: string;
+        app_id: string;
+        title: string;
+        summary: string;
+        body: string;
+      }>;
+      const ins = db.prepare(
+        `INSERT INTO defects_fts (id, app_id, title, summary, body) VALUES (?,?,?,?,?)`,
+      );
+      for (const r of rows) {
+        ins.run(r.id, r.app_id, r.title || '', r.summary || '', r.body || '');
+      }
+    }
+  } catch {
+    /* FTS optional if extension missing */
   }
 }
 

@@ -33,6 +33,8 @@ Apps: **per product surface**, multi-repo URLs; seeded Tutored Webapp + Mobileap
 
 | Method | Path | Purpose |
 |--------|------|---------|
+| `GET` | `/api/analytics` | Phase A SQL analytics (`app_id?`) — defect mix, prompt_use, jobs |
+| `GET` | `/api/search` | Phase A FTS find (`q?`, `app_id?`, `limit?`) |
 | `GET` | `/api/apps` | List apps + default |
 | `POST` | `/api/apps` | Create app (onboarding) — generates `app_` + hash id |
 | `GET` | `/api/apps/:id` | One app |

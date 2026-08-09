@@ -10,6 +10,7 @@ import {
   listApps,
   updateAppSettings,
 } from './apps.js';
+import { getAnalyticsSummary, searchDefects } from './analytics.js';
 import type { Db } from './db.js';
 import type { BatchJobRunner } from './jobs/batchJob.js';
 import {
@@ -45,7 +46,36 @@ export async function registerRoutes(
       defaultAppId: getDefaultAppId(db),
       normalizeMode: resolveNormalizeMode(),
       ssot: 'sqlite',
+      analytics: 'phase-a',
     };
+  });
+
+  /**
+   * Phase A analytics — SQL aggregates (defect mix, prompt_use, job success).
+   * Query: app_id? (optional filter)
+   */
+  app.get<{ Querystring: { app_id?: string } }>(
+    '/api/analytics',
+    async (req) => {
+      const app_id = req.query.app_id?.trim() || undefined;
+      return { analytics: getAnalyticsSummary(db, { app_id }) };
+    },
+  );
+
+  /**
+   * Phase A find — FTS5 over defect title/summary/body (LIKE fallback).
+   * Query: q?, app_id?, limit?
+   */
+  app.get<{
+    Querystring: { q?: string; app_id?: string; limit?: string };
+  }>('/api/search', async (req) => {
+    const limit = req.query.limit ? Number(req.query.limit) : 40;
+    const result = searchDefects(db, {
+      q: req.query.q,
+      app_id: req.query.app_id?.trim() || undefined,
+      limit: Number.isFinite(limit) ? limit : 40,
+    });
+    return result;
   });
 
   app.get('/api/apps', async () => {

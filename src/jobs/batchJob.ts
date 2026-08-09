@@ -23,6 +23,13 @@ import {
   type BatchRecord,
   type BatchStatus,
 } from '../batches.js';
+import {
+  deleteJobSummary,
+  jobStatusToPromptOutcome,
+  recordPromptUse,
+  setPromptUseOutcomeForJob,
+  upsertJobSummary,
+} from '../analytics.js';
 import { packageRoot } from '../paths.js';
 import type { DefectStore } from '../store.js';
 import { isSafeId } from '../store.js';
@@ -113,6 +120,22 @@ export class BatchJobRunner {
           writeFileSync(p, JSON.stringify(job, null, 2), 'utf8');
         }
         this.jobs.set(job.jobId, job);
+        try {
+          upsertJobSummary(this.store.db, {
+            job_id: job.jobId,
+            batch_id: job.batchId,
+            app_id: job.app_id,
+            status: job.status,
+            mode: job.mode,
+            defect_ids: job.defect_ids,
+            prs: job.prs,
+            error: job.error,
+            created_at: job.createdAt,
+            updated_at: job.updatedAt,
+          });
+        } catch {
+          /* ignore backfill errors */
+        }
       } catch {
         /* skip */
       }
@@ -124,6 +147,27 @@ export class BatchJobRunner {
     const dir = path.join(this.jobsRoot(), job.jobId);
     mkdirSync(dir, { recursive: true });
     writeFileSync(path.join(dir, 'job.json'), JSON.stringify(job, null, 2), 'utf8');
+    // Phase A: denormalized job row for SQL analytics
+    try {
+      upsertJobSummary(this.store.db, {
+        job_id: job.jobId,
+        batch_id: job.batchId,
+        app_id: job.app_id,
+        status: job.status,
+        mode: job.mode,
+        defect_ids: job.defect_ids,
+        prs: job.prs,
+        error: job.error,
+        created_at: job.createdAt,
+        updated_at: job.updatedAt,
+      });
+      const outcome = jobStatusToPromptOutcome(job.status);
+      if (outcome !== 'unknown') {
+        setPromptUseOutcomeForJob(this.store.db, job.jobId, outcome);
+      }
+    } catch {
+      /* analytics must not break harness */
+    }
   }
 
   /**
@@ -230,6 +274,11 @@ export class BatchJobRunner {
     }
 
     this.jobs.delete(jobId);
+    try {
+      deleteJobSummary(this.store.db, jobId);
+    } catch {
+      /* ignore */
+    }
     return { ok: true, jobId, batchId: job.batchId };
   }
 
@@ -391,9 +440,26 @@ export class BatchJobRunner {
     };
 
     this.persist(job);
+    // Phase A: structured prompt_use for batch-fix analytics
+    try {
+      recordPromptUse(this.store.db, {
+        prompt_key:
+          mode === 'manual' ? 'batch_fix.manual.v1' : 'batch_fix.v1',
+        prompt_version: '1',
+        job_id: jobId,
+        batch_id: batchId,
+        app_id: input.app_id,
+        defect_ids: ids,
+        outcome: 'unknown',
+        runner: mode === 'manual' ? 'manual' : 'coding_agent',
+        body_text: goal.slice(0, 2000),
+      });
+    } catch {
+      /* non-fatal */
+    }
     this.log(job, `batch manifest → ${batch.path}`);
     this.log(job, `handoff → ${handoff}`);
-    // Pre-create handoff dirs Grok must write into (sandbox-writable)
+    // Pre-create handoff dirs the agent must write into (sandbox-writable)
     mkdirSync(path.join(handoff, 'fix-evidence'), { recursive: true });
     mkdirSync(path.join(handoff, 'fix-notes'), { recursive: true });
 

@@ -11,6 +11,10 @@ import {
   canonicalizeAppId,
   SEEDED_TUTORED_WEBAPP_APP_ID,
 } from './apps.js';
+import {
+  removeDefectFts,
+  syncDefectFts,
+} from './analytics.js';
 import type { Db } from './db.js';
 import { jsonArray, nowIso, parseJsonArray } from './db.js';
 import { parseMarkdownWithFrontmatter } from './frontmatter.js';
@@ -190,6 +194,14 @@ export class DefectStore {
     const app_id = canonicalizeAppId(record.app_id || SEEDED_TUTORED_WEBAPP_APP_ID);
     const ts = nowIso();
     const existing = this.get(record.id);
+    // Dimension defaults for consistent analytics
+    const severity = (record.severity || 'P2').trim() || 'P2';
+    const status = (record.status || 'open').trim() || 'open';
+    const area = (record.area || 'other').trim() || 'other';
+    const client = (record.client || 'unknown').trim() || 'unknown';
+    const surface = (record.surface || '').trim();
+    const source = (record.source || '').trim() || 'unknown';
+    const title = (record.title || '').trim() || 'Untitled defect';
 
     if (existing) {
       this.db
@@ -203,16 +215,16 @@ export class DefectStore {
         )
         .run(
           app_id,
-          record.title,
-          record.severity,
-          record.status,
-          record.area,
-          record.client,
-          record.surface,
+          title,
+          severity,
+          status,
+          area,
+          client,
+          surface,
           jsonArray(record.repos),
           jsonArray(record.labels),
           jsonArray(record.related),
-          record.source,
+          source,
           jsonArray(record.key_files),
           jsonArray(record.evidence),
           jsonArray(record.fix_evidence ?? []),
@@ -239,16 +251,16 @@ export class DefectStore {
         .run(
           record.id,
           app_id,
-          record.title,
-          record.severity,
-          record.status,
-          record.area,
-          record.client,
-          record.surface,
+          title,
+          severity,
+          status,
+          area,
+          client,
+          surface,
           jsonArray(record.repos),
           jsonArray(record.labels),
           jsonArray(record.related),
-          record.source,
+          source,
           jsonArray(record.key_files),
           jsonArray(record.evidence),
           jsonArray(record.fix_evidence ?? []),
@@ -263,7 +275,19 @@ export class DefectStore {
           ts,
         );
     }
-    return this.get(record.id)!;
+    const saved = this.get(record.id)!;
+    try {
+      syncDefectFts(this.db, {
+        id: saved.id,
+        app_id: saved.app_id,
+        title: saved.title,
+        summary: saved.summary,
+        body: saved.body,
+      });
+    } catch {
+      /* FTS optional */
+    }
+    return saved;
   }
 
   update(
@@ -355,6 +379,11 @@ export class DefectStore {
     const cur = this.get(id);
     if (!cur) return false;
     this.db.prepare('DELETE FROM defects WHERE id = ?').run(id);
+    try {
+      removeDefectFts(this.db, id);
+    } catch {
+      /* ignore */
+    }
     if (opts?.evidence) {
       const ev = path.join(evidenceDir(this.defectsRoot), id);
       if (existsSync(ev)) {
