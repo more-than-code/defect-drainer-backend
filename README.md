@@ -129,3 +129,7 @@ Use sibling **`console/`** (`defect-drainer-console`) — Vite app proxies to th
 
 - Umbrella: `../README.md`, `../HANDOFF.md`, `../AGENTS.md`
 - Console: `../console/README.md`
+
+## License
+
+MIT — see [LICENSE](./LICENSE).
