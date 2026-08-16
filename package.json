@@ -9,7 +9,10 @@
     "start": "node dist/server.js",
     "build": "node ./node_modules/typescript/bin/tsc -p tsconfig.json",
     "check": "node ./node_modules/typescript/bin/tsc -p tsconfig.json --noEmit",
-    "test": "node ./node_modules/tsx/dist/cli.mjs --test test/**/*.test.ts"
+    "test": "node ./node_modules/tsx/dist/cli.mjs --test test/**/*.test.ts",
+    "search:up": "podman compose -f docker-compose.search.yml up -d",
+    "search:down": "podman compose -f docker-compose.search.yml down",
+    "search:logs": "podman compose -f docker-compose.search.yml logs -f opensearch"
   },
   "dependencies": {
     "@fastify/multipart": "^9.0.3",

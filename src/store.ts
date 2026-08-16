@@ -19,6 +19,8 @@ import type { Db } from './db.js';
 import { jsonArray, nowIso, parseJsonArray } from './db.js';
 import { parseMarkdownWithFrontmatter } from './frontmatter.js';
 import { evidenceDir } from './paths.js';
+import { allDocsForDefect } from './search/documents.js';
+import { publishDocumentsBackground } from './search/publisher.js';
 
 export type DefectStatus =
   | 'open'
@@ -287,6 +289,12 @@ export class DefectStore {
     } catch {
       /* FTS optional */
     }
+    // Phase B: fail-soft OpenSearch publish
+    try {
+      publishDocumentsBackground({ db: this.db }, allDocsForDefect(saved));
+    } catch {
+      /* ignore */
+    }
     return saved;
   }
 
@@ -422,6 +430,7 @@ export class DefectStore {
       paths.push(path.join('evidence', id, name));
       n += 1;
     }
+    // Caller updates defect evidence_json; store.write publishes to OpenSearch.
     return paths;
   }
 

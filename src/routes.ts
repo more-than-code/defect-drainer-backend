@@ -10,7 +10,7 @@ import {
   listApps,
   updateAppSettings,
 } from './apps.js';
-import { getAnalyticsSummary, searchDefects } from './analytics.js';
+import { getAnalyticsSummary } from './analytics.js';
 import type { Db } from './db.js';
 import type { BatchJobRunner } from './jobs/batchJob.js';
 import {
@@ -18,6 +18,10 @@ import {
   type NormalizeJobRunner,
 } from './jobs/normalizeJob.js';
 import { evidenceDir } from './paths.js';
+import { getOpenSearchConfig, ping, createOsHttp } from './search/opensearchClient.js';
+import { flushSearchOutbox } from './search/publisher.js';
+import { multiSearch } from './search/query.js';
+import { reindexAll } from './search/reindex.js';
 import type { DefectStore } from './store.js';
 import { isSafeId } from './store.js';
 
@@ -47,6 +51,7 @@ export async function registerRoutes(
       normalizeMode: resolveNormalizeMode(),
       ssot: 'sqlite',
       analytics: 'phase-a',
+      search: getOpenSearchConfig().enabled ? 'phase-b' : 'phase-a',
     };
   });
 
@@ -63,19 +68,78 @@ export async function registerRoutes(
   );
 
   /**
-   * Phase A find — FTS5 over defect title/summary/body (LIKE fallback).
-   * Query: q?, app_id?, limit?
+   * Multi-artifact search — OpenSearch when configured, else Phase A FTS.
+   * Query: q?, app_id?, artifact_type?, severity?, area?, status?, limit?, prefer?
    */
   app.get<{
-    Querystring: { q?: string; app_id?: string; limit?: string };
+    Querystring: {
+      q?: string;
+      app_id?: string;
+      artifact_type?: string;
+      severity?: string;
+      area?: string;
+      status?: string;
+      limit?: string;
+      prefer?: string;
+    };
   }>('/api/search', async (req) => {
     const limit = req.query.limit ? Number(req.query.limit) : 40;
-    const result = searchDefects(db, {
+    const prefer =
+      req.query.prefer === 'fts' || req.query.prefer === 'opensearch'
+        ? req.query.prefer
+        : undefined;
+    const result = await multiSearch(db, {
       q: req.query.q,
       app_id: req.query.app_id?.trim() || undefined,
+      artifact_type: req.query.artifact_type?.trim() || undefined,
+      severity: req.query.severity?.trim() || undefined,
+      area: req.query.area?.trim() || undefined,
+      status: req.query.status?.trim() || undefined,
       limit: Number.isFinite(limit) ? limit : 40,
+      prefer,
     });
     return result;
+  });
+
+  /** OpenSearch status + outbox depth */
+  app.get('/api/search/status', async () => {
+    const cfg = getOpenSearchConfig();
+    let reachable = false;
+    if (cfg.enabled) {
+      reachable = await ping(createOsHttp(cfg.url));
+    }
+    const outbox = Number(
+      (
+        db.prepare(`SELECT COUNT(*) AS c FROM search_outbox`).get() as {
+          c: number;
+        }
+      ).c,
+    );
+    return {
+      enabled: cfg.enabled,
+      url: cfg.url || null,
+      index: cfg.index,
+      reachable,
+      outbox,
+    };
+  });
+
+  /** Flush fail-soft outbox (best effort). */
+  app.post('/api/search/flush', async () => {
+    const r = await flushSearchOutbox({ db });
+    return r;
+  });
+
+  /** Full reindex from SQLite → OpenSearch (operator / dev). */
+  app.post('/api/search/reindex', async (req, reply) => {
+    const cfg = getOpenSearchConfig();
+    if (!cfg.enabled) {
+      return reply
+        .code(400)
+        .send({ error: 'OpenSearch disabled (set DEFECT_DRAINER_OPENSEARCH_URL)' });
+    }
+    const r = await reindexAll(db, store);
+    return r;
   });
 
   app.get('/api/apps', async () => {

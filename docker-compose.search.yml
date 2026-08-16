@@ -1,0 +1,41 @@
+# Phase B — OpenSearch only (API/console on host via pnpm).
+# Prefer full stack: ../deploy/docker-compose.yml
+#
+#   podman compose -f docker-compose.search.yml up -d
+#   export DEFECT_DRAINER_OPENSEARCH_URL=http://127.0.0.1:9200
+#   pnpm dev
+
+services:
+  opensearch:
+    image: docker.io/opensearchproject/opensearch:2.18.0
+    container_name: defect-drainer-opensearch
+    environment:
+      - discovery.type=single-node
+      - plugins.security.disabled=true
+      - OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m
+      - bootstrap.memory_lock=true
+      - DISABLE_INSTALL_DEMO_CONFIG=true
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    ports:
+      - '127.0.0.1:9200:9200'
+    volumes:
+      - dd_opensearch_data:/usr/share/opensearch/data
+    healthcheck:
+      test:
+        [
+          'CMD-SHELL',
+          'curl -sf http://127.0.0.1:9200/_cluster/health || exit 1',
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+volumes:
+  dd_opensearch_data:

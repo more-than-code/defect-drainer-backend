@@ -118,6 +118,20 @@ CREATE TABLE IF NOT EXISTS job_summary (
 CREATE INDEX IF NOT EXISTS idx_job_summary_app ON job_summary(app_id);
 CREATE INDEX IF NOT EXISTS idx_job_summary_status ON job_summary(status);
 CREATE INDEX IF NOT EXISTS idx_job_summary_created ON job_summary(created_at);
+
+/** Phase B fail-soft: docs that failed to publish to OpenSearch. */
+CREATE TABLE IF NOT EXISTS search_outbox (
+  id TEXT PRIMARY KEY,
+  doc_id TEXT NOT NULL,
+  op TEXT NOT NULL DEFAULT 'index',
+  body_json TEXT,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_search_outbox_updated ON search_outbox(updated_at);
 `;
 
 export function resolveDbPath(dataRoot: string): string {

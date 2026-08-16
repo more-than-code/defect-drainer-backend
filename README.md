@@ -34,7 +34,20 @@ Apps: **per product surface**, multi-repo URLs; seeded Tutored Webapp + Mobileap
 | Method | Path | Purpose |
 |--------|------|---------|
 | `GET` | `/api/analytics` | Phase A SQL analytics (`app_id?`) — defect mix, prompt_use, jobs |
-| `GET` | `/api/search` | Phase A FTS find (`q?`, `app_id?`, `limit?`) |
+| `GET` | `/api/search` | Multi-artifact search (OpenSearch if configured, else FTS) |
+| `GET` | `/api/search/status` | OpenSearch enabled/reachable + outbox depth |
+| `POST` | `/api/search/flush` | Drain search_outbox |
+| `POST` | `/api/search/reindex` | Full reindex SSOT → OpenSearch |
+
+**Phase B OpenSearch (optional):**
+
+```bash
+pnpm search:up          # podman compose — :9200
+export DEFECT_DRAINER_OPENSEARCH_URL=http://127.0.0.1:9200
+# optional: DEFECT_DRAINER_OPENSEARCH_INDEX=defect-drainer-artifacts
+pnpm dev
+curl -X POST http://127.0.0.1:8788/api/search/reindex
+```
 | `GET` | `/api/apps` | List apps + default |
 | `POST` | `/api/apps` | Create app (onboarding) — generates `app_` + hash id |
 | `GET` | `/api/apps/:id` | One app |

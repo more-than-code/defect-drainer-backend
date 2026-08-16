@@ -31,6 +31,8 @@ import {
   upsertJobSummary,
 } from '../analytics.js';
 import { packageRoot } from '../paths.js';
+import { jobSummaryDoc } from '../search/documents.js';
+import { publishDocumentsBackground } from '../search/publisher.js';
 import type { DefectStore } from '../store.js';
 import { isSafeId } from '../store.js';
 import {
@@ -165,6 +167,23 @@ export class BatchJobRunner {
       if (outcome !== 'unknown') {
         setPromptUseOutcomeForJob(this.store.db, job.jobId, outcome);
       }
+      // Phase B: index job summary + tail of log (not full firehose)
+      const logTail = (job.log || []).slice(-40).join('\n').slice(0, 6000);
+      publishDocumentsBackground(
+        { db: this.store.db },
+        jobSummaryDoc({
+          job_id: job.jobId,
+          batch_id: job.batchId,
+          app_id: job.app_id,
+          status: job.status,
+          mode: job.mode,
+          error: job.error,
+          created_at: job.createdAt,
+          updated_at: job.updatedAt,
+          log_excerpt: logTail || undefined,
+          defect_ids: job.defect_ids,
+        }),
+      );
     } catch {
       /* analytics must not break harness */
     }

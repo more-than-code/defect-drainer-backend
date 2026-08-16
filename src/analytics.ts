@@ -5,6 +5,9 @@
 import { randomBytes } from 'node:crypto';
 import type { Db } from './db.js';
 import { jsonArray, nowIso, parseJsonArray } from './db.js';
+import { promptUseDoc } from './search/documents.js';
+import { jobSummaryDoc } from './search/documents.js';
+import { publishDocumentsBackground } from './search/publisher.js';
 
 export type PromptOutcome =
   | 'success'
@@ -66,6 +69,26 @@ export function recordPromptUse(db: Db, input: PromptUseInput): string {
     ts,
     ts,
   );
+  try {
+    publishDocumentsBackground(
+      { db },
+      [
+        promptUseDoc({
+          id,
+          prompt_key: (input.prompt_key || 'unknown').slice(0, 200),
+          app_id: input.app_id || '',
+          job_id: input.job_id,
+          batch_id: input.batch_id,
+          body_text: (input.body_text || '').slice(0, 2000),
+          outcome: input.outcome || 'unknown',
+          created_at: ts,
+          defect_ids: input.defect_ids,
+        }),
+      ],
+    );
+  } catch {
+    /* ignore */
+  }
   return id;
 }
 
@@ -131,6 +154,24 @@ export function upsertJobSummary(db: Db, input: JobSummaryInput): void {
     updated,
     completed_at,
   );
+  try {
+    publishDocumentsBackground(
+      { db },
+      jobSummaryDoc({
+        job_id: input.job_id,
+        batch_id: input.batch_id,
+        app_id: input.app_id,
+        status: input.status,
+        mode: input.mode,
+        error: input.error,
+        created_at: input.created_at,
+        updated_at: updated,
+        defect_ids: input.defect_ids,
+      }),
+    );
+  } catch {
+    /* ignore */
+  }
 }
 
 export function deleteJobSummary(db: Db, jobId: string): void {
