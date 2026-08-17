@@ -13,6 +13,13 @@ export type SpawnGrokBatchFixOpts = {
   worktrees: WorktreeBinding[];
   /** From App Settings (strict | workspace) */
   sandbox: GrokSandboxProfile;
+  /** Pre-provisioned toolchain: prompt lines + env merged into the child. */
+  toolchainNotes?: string[];
+  toolchainEnv?: Record<string, string>;
+  /** Job-scoped custom sandbox profile name (see sandboxProfile.ts). */
+  sandboxProfile?: string;
+  /** Operator verification commands DD re-runs after this session exits. */
+  verifyCommands?: Array<{ repo: string; command: string }>;
   onLog: (
     line: string,
     level?: 'info' | 'warn' | 'error',
@@ -33,6 +40,8 @@ export function buildBatchFixCliPrompt(input: {
   defectsRoot: string;
   worktrees: WorktreeBinding[];
   sandbox: GrokSandboxProfile;
+  toolchainNotes?: string[];
+  verifyCommands?: Array<{ repo: string; command: string }>;
 }): string {
   const wtLines = input.worktrees.length
     ? input.worktrees.map(
@@ -66,6 +75,19 @@ export function buildBatchFixCliPrompt(input: {
     `Inventory root: ${input.defectsRoot}`,
     ``,
     ...sandboxNotes,
+    ...(input.toolchainNotes?.length ? ['', ...input.toolchainNotes] : []),
+    ...(input.verifyCommands?.length
+      ? [
+          ``,
+          `VERIFICATION (run by Defect Drainer after you exit — not by you, and not editable):`,
+          ...input.verifyCommands.map(
+            (v) => `- ${v.repo}: ${v.command}`,
+          ),
+          `- Every one must exit 0 or NOTHING resolves, however good your screenshots are.`,
+          `- Run them yourself in the worktree before claiming DONE; fix what fails.`,
+          `- Do not report test results you did not actually observe.`,
+        ]
+      : []),
     ``,
     `WORKTREE ENFORCEMENT (mandatory):`,
     ...wtLines,
@@ -102,6 +124,9 @@ export function spawnGrokBatchFix(
   }
 
   const sandbox = opts.sandbox === 'workspace' ? 'workspace' : 'strict';
+  // A job-scoped profile extends the built-in one; the prompt still describes
+  // the base profile's rules, which the custom profile only widens.
+  const sandboxArg = opts.sandboxProfile || sandbox;
   const bin = resolveGrokBuildBin();
   const maxTurns = envDrainer('GROK_BATCH_MAX_TURNS') ?? '80';
   const prompt = buildBatchFixCliPrompt({
@@ -110,6 +135,8 @@ export function spawnGrokBatchFix(
     defectsRoot: opts.defectsRoot,
     worktrees: opts.worktrees,
     sandbox,
+    toolchainNotes: opts.toolchainNotes,
+    verifyCommands: opts.verifyCommands,
   });
 
   const args = [
@@ -118,7 +145,7 @@ export function spawnGrokBatchFix(
     '--cwd',
     opts.handoffAbs,
     '--sandbox',
-    sandbox,
+    sandboxArg,
     '--always-approve',
     '--max-turns',
     maxTurns,
@@ -201,7 +228,8 @@ export function spawnGrokBatchFix(
       env: {
         ...process.env,
         CI: process.env.CI ?? '1',
-        GROK_SANDBOX: sandbox,
+        GROK_SANDBOX: sandboxArg,
+        ...(opts.toolchainEnv ?? {}),
         DEFECT_DRAINER_WORKTREES: opts.worktrees
           .map((w) => w.worktreeAbs)
           .join(':'),

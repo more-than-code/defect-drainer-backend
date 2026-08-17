@@ -20,6 +20,12 @@ CREATE TABLE IF NOT EXISTS apps (
   repo_urls_json TEXT NOT NULL DEFAULT '[]',
   /** Agent sandbox profile: strict | workspace (per App Settings) */
   grok_sandbox TEXT NOT NULL DEFAULT 'strict',
+  /** Pre-provisioned agent toolchain: none | flutter (per App Settings) */
+  agent_toolchain TEXT NOT NULL DEFAULT 'none',
+  /** Grant Simulator device-tree writes for batch jobs (per App Settings) */
+  allow_simulator_writes INTEGER NOT NULL DEFAULT 0,
+  /** Operator-defined verification commands re-run by DD after a fix job */
+  verify_commands_json TEXT NOT NULL DEFAULT '[]',
   /** Batch-fix base: worktrees branch from <base_remote>/<base_branch>; PRs target base_branch. */
   base_remote TEXT NOT NULL DEFAULT 'origin',
   base_branch TEXT NOT NULL DEFAULT 'main',
@@ -165,6 +171,21 @@ function migrateAppColumns(db: Db): void {
   if (!names.has('grok_sandbox')) {
     db.exec(
       `ALTER TABLE apps ADD COLUMN grok_sandbox TEXT NOT NULL DEFAULT 'strict'`,
+    );
+  }
+  if (!names.has('agent_toolchain')) {
+    db.exec(
+      `ALTER TABLE apps ADD COLUMN agent_toolchain TEXT NOT NULL DEFAULT 'none'`,
+    );
+  }
+  if (!names.has('allow_simulator_writes')) {
+    db.exec(
+      `ALTER TABLE apps ADD COLUMN allow_simulator_writes INTEGER NOT NULL DEFAULT 0`,
+    );
+  }
+  if (!names.has('verify_commands_json')) {
+    db.exec(
+      `ALTER TABLE apps ADD COLUMN verify_commands_json TEXT NOT NULL DEFAULT '[]'`,
     );
   }
   if (!names.has('base_remote')) {

@@ -153,7 +153,7 @@ export async function registerRoutes(
 
   /**
    * Create app (onboarding). Generates platform hash id.
-   * Body: { name, description?, repos?, repo_entries?, repo_url?, repo_urls?, grok_sandbox?, default? }
+   * Body: { name, description?, repos?, repo_entries?, repo_url?, repo_urls?, grok_sandbox?, agent_toolchain?, default? }
    */
   app.post<{
     Body: {
@@ -170,6 +170,9 @@ export async function registerRoutes(
       repo_url?: string;
       repo_urls?: string[];
       grok_sandbox?: string;
+      agent_toolchain?: string;
+      allow_simulator_writes?: boolean;
+      verify_commands?: Array<{ repo?: string; command?: string }>;
       base_remote?: string;
       base_branch?: string;
       default?: boolean;
@@ -186,6 +189,9 @@ export async function registerRoutes(
         repo_url: b.repo_url,
         repo_urls: b.repo_urls,
         grok_sandbox: b.grok_sandbox,
+        agent_toolchain: b.agent_toolchain,
+        allow_simulator_writes: b.allow_simulator_writes,
+        verify_commands: b.verify_commands,
         base_remote: b.base_remote,
         base_branch: b.base_branch,
         default: b.default,
@@ -222,6 +228,9 @@ export async function registerRoutes(
       repo_url?: string | null;
       repo_urls?: string[] | null;
       grok_sandbox?: string;
+      agent_toolchain?: string;
+      allow_simulator_writes?: boolean;
+      verify_commands?: Array<{ repo?: string; command?: string }>;
       base_remote?: string;
       base_branch?: string;
       default?: boolean;

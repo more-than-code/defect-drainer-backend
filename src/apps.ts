@@ -24,6 +24,36 @@ export type AppRepoEntry = {
  */
 export type GrokSandboxProfile = 'strict' | 'workspace';
 
+/** Toolchain DD pre-provisions into the job handoff before spawning the agent. */
+export type AgentToolchain = 'none' | 'flutter';
+
+/**
+ * A command DD re-runs itself in a worktree after a fix job, to decide whether
+ * the defect may resolve. Operator-authored on purpose: DD's runner is NOT
+ * sandboxed, so accepting command strings from the coding agent would hand it
+ * unsandboxed execution on the host.
+ */
+export type VerifyCommand = {
+  /** Worktree repo name the command runs in (matches an app repo entry). */
+  repo: string;
+  command: string;
+};
+
+export function normalizeVerifyCommands(v: unknown): VerifyCommand[] {
+  if (!Array.isArray(v)) return [];
+  const out: VerifyCommand[] = [];
+  for (const raw of v) {
+    if (!raw || typeof raw !== 'object') continue;
+    const r = raw as { repo?: unknown; command?: unknown };
+    const repo = String(r.repo ?? '').trim();
+    const command = String(r.command ?? '').trim();
+    if (!repo || !command) continue;
+    if (command.length > 500) continue;
+    out.push({ repo, command });
+  }
+  return out.slice(0, 20);
+}
+
 export type AppRecord = {
   /** Platform id: app_ + 16 hex chars (unique, immutable) */
   id: string;
@@ -39,6 +69,25 @@ export type AppRecord = {
   repo_urls?: string[];
   /** Per-app agent sandbox (App Settings). Default strict. API: grok_sandbox. */
   grok_sandbox?: GrokSandboxProfile;
+  /**
+   * Toolchain pre-provisioned into the handoff (App Settings). Default none.
+   * `flutter` clones the repo's pinned SDK somewhere the sandbox can write, so
+   * the agent runs the project's real test/analyze commands instead of
+   * improvising an SDK overlay. API: agent_toolchain.
+   */
+  agent_toolchain?: AgentToolchain;
+  /**
+   * Grant the agent write access to the iOS Simulator device tree for the job
+   * (App Settings). Default false — this widens what it may change on the host.
+   * API: allow_simulator_writes.
+   */
+  allow_simulator_writes?: boolean;
+  /**
+   * Commands DD re-runs after a fix job; all must exit 0 before a defect may
+   * resolve. Empty = today's behaviour (evidence files alone).
+   * API: verify_commands.
+   */
+  verify_commands?: VerifyCommand[];
   /** Remote whose tracking ref batch worktrees branch from. Default `origin`. */
   base_remote?: string;
   /** Branch batch worktrees branch from, and the PR target. Default `main`. */
@@ -77,6 +126,22 @@ export function parseGitRefName(v: unknown, fallback: string): string {
 }
 
 /** Accept CLI names plus UI alias "restrict" → strict. */
+function parseStoredVerifyCommands(raw: string | null | undefined): VerifyCommand[] {
+  if (!raw) return [];
+  try {
+    return normalizeVerifyCommands(JSON.parse(raw));
+  } catch {
+    return [];
+  }
+}
+
+export function parseAgentToolchain(v: unknown): AgentToolchain {
+  const s = String(v ?? '')
+    .trim()
+    .toLowerCase();
+  return s === 'flutter' ? 'flutter' : 'none';
+}
+
 export function parseGrokSandbox(v: unknown): GrokSandboxProfile {
   const s = String(v ?? '')
     .trim()
@@ -308,6 +373,9 @@ type AppRow = {
   repo_url: string | null;
   repo_urls_json: string;
   grok_sandbox?: string | null;
+  agent_toolchain?: string | null;
+  allow_simulator_writes?: number | null;
+  verify_commands_json?: string | null;
   base_remote?: string | null;
   base_branch?: string | null;
   is_default: number;
@@ -331,13 +399,16 @@ function rowToApp(row: AppRow): AppRecord {
     repo_url: urls.length === 1 ? urls[0] : undefined,
     repo_urls: urls.length > 1 ? urls : undefined,
     grok_sandbox: parseGrokSandbox(row.grok_sandbox),
+    agent_toolchain: parseAgentToolchain(row.agent_toolchain),
+    allow_simulator_writes: !!row.allow_simulator_writes,
+    verify_commands: parseStoredVerifyCommands(row.verify_commands_json),
     base_remote: parseGitRefName(row.base_remote, 'origin'),
     base_branch: parseGitRefName(row.base_branch, 'main'),
     default: !!row.is_default,
   };
 }
 
-const APP_SELECT = `id, name, description, workspace_root, repos_json, repo_url, repo_urls_json, grok_sandbox, base_remote, base_branch, is_default`;
+const APP_SELECT = `id, name, description, workspace_root, repos_json, repo_url, repo_urls_json, grok_sandbox, agent_toolchain, allow_simulator_writes, verify_commands_json, base_remote, base_branch, is_default`;
 
 export function listApps(db: Db): AppRecord[] {
   const rows = db
@@ -479,6 +550,9 @@ export function createApp(
     repo_url?: string;
     repo_urls?: string[];
     grok_sandbox?: GrokSandboxProfile | string;
+    agent_toolchain?: AgentToolchain | string;
+    allow_simulator_writes?: boolean;
+    verify_commands?: unknown;
     base_remote?: string;
     base_branch?: string;
     default?: boolean;
@@ -511,8 +585,9 @@ export function createApp(
   db.prepare(
     `INSERT INTO apps (
       id, name, description, workspace_root, repos_json, repo_url, repo_urls_json,
-      grok_sandbox, base_remote, base_branch, is_default, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      grok_sandbox, agent_toolchain, allow_simulator_writes, verify_commands_json,
+      base_remote, base_branch, is_default, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     id,
     name,
@@ -522,6 +597,9 @@ export function createApp(
     cols.repo_url,
     cols.repo_urls_json,
     grok_sandbox,
+    parseAgentToolchain(input.agent_toolchain),
+    input.allow_simulator_writes ? 1 : 0,
+    JSON.stringify(normalizeVerifyCommands(input.verify_commands)),
     parseGitRefName(input.base_remote, 'origin'),
     parseGitRefName(input.base_branch, 'main'),
     makeDefault ? 1 : 0,
@@ -544,6 +622,9 @@ export function updateAppSettings(
     repo_url?: string | null;
     repo_urls?: string[] | null;
     grok_sandbox?: GrokSandboxProfile | string;
+    agent_toolchain?: AgentToolchain | string;
+    allow_simulator_writes?: boolean;
+    verify_commands?: unknown;
     base_remote?: string;
     base_branch?: string;
     default?: boolean;
@@ -563,6 +644,15 @@ export function updateAppSettings(
   }
   if (patch.grok_sandbox !== undefined) {
     next.grok_sandbox = parseGrokSandbox(patch.grok_sandbox);
+  }
+  if (patch.agent_toolchain !== undefined) {
+    next.agent_toolchain = parseAgentToolchain(patch.agent_toolchain);
+  }
+  if (patch.allow_simulator_writes !== undefined) {
+    next.allow_simulator_writes = !!patch.allow_simulator_writes;
+  }
+  if (patch.verify_commands !== undefined) {
+    next.verify_commands = normalizeVerifyCommands(patch.verify_commands);
   }
   if (patch.base_remote !== undefined) {
     next.base_remote = parseGitRefName(patch.base_remote, 'origin');
@@ -631,7 +721,8 @@ export function updateAppSettings(
   db.prepare(
     `UPDATE apps SET
       name = ?, description = ?, workspace_root = ?, repos_json = ?,
-      repo_url = ?, repo_urls_json = ?, grok_sandbox = ?, base_remote = ?,
+      repo_url = ?, repo_urls_json = ?, grok_sandbox = ?, agent_toolchain = ?,
+      allow_simulator_writes = ?, verify_commands_json = ?, base_remote = ?,
       base_branch = ?, is_default = ?, updated_at = ?
      WHERE id = ?`,
   ).run(
@@ -642,6 +733,9 @@ export function updateAppSettings(
     cols.repo_url,
     cols.repo_urls_json,
     parseGrokSandbox(next.grok_sandbox),
+    parseAgentToolchain(next.agent_toolchain),
+    next.allow_simulator_writes ? 1 : 0,
+    JSON.stringify(normalizeVerifyCommands(next.verify_commands)),
     parseGitRefName(next.base_remote, 'origin'),
     parseGitRefName(next.base_branch, 'main'),
     next.default ? 1 : 0,

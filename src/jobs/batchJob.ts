@@ -54,6 +54,16 @@ import {
   type WorktreeBinding,
 } from '../worktrees.js';
 import { spawnGrokBatchFix } from './spawnGrokBatchFix.js';
+import {
+  NO_TOOLCHAIN,
+  provisionFlutterToolchain,
+} from './provisionToolchain.js';
+import { writeSimulatorSandboxProfile } from './sandboxProfile.js';
+import {
+  runVerification,
+  summarizeVerification,
+  type VerificationRun,
+} from './runVerification.js';
 
 /** Safe job directory name: bjob_<alnum> */
 const SAFE_JOB_ID = /^bjob_[a-z0-9_]+$/i;
@@ -84,6 +94,8 @@ export type BatchJob = {
   repo_urls?: string[];
   /** Results from Create PR action */
   prs?: CreatePrResult[];
+  /** Operator-defined verification re-run by DD; gates defect resolution. */
+  verification?: VerificationRun;
 };
 
 function nowIso(): string {
@@ -835,15 +847,49 @@ export class BatchJobRunner {
     try {
       const app = getApp(this.store.db, job.app_id);
       const sandbox = resolveGrokSandbox(app);
-      this.log(job, `app ${job.app_id} grok_sandbox=${sandbox}`);
+      const toolchain = app?.agent_toolchain === 'flutter' ? 'flutter' : 'none';
+      this.log(
+        job,
+        `app ${job.app_id} grok_sandbox=${sandbox} agent_toolchain=${toolchain}`,
+      );
       mkdirSync(path.join(handoff, 'fix-evidence'), { recursive: true });
       mkdirSync(path.join(handoff, 'fix-notes'), { recursive: true });
+      // Provision BEFORE spawn: the agent cannot write outside the handoff, so
+      // an SDK it needs has to already be there (see provisionToolchain.ts).
+      const provisioned =
+        toolchain === 'flutter'
+          ? provisionFlutterToolchain({
+              handoffAbs: handoff,
+              worktrees,
+              onLog: (line, level) =>
+                this.log(job, line, level ?? 'info', 'DefectDrainer'),
+            })
+          : NO_TOOLCHAIN;
+      // Opt-in host write grant, scoped to this handoff (see sandboxProfile.ts).
+      const simWrites = !!app?.allow_simulator_writes;
+      const profile = simWrites
+        ? writeSimulatorSandboxProfile({
+            handoffAbs: handoff,
+            base: sandbox,
+            batchId: job.batchId,
+          })
+        : null;
+      if (profile) {
+        this.log(
+          job,
+          `sandbox: job profile '${profile.profile}' extends ${sandbox} + Simulator device writes`,
+        );
+      }
       const handle = spawnGrokBatchFix({
         handoffAbs: handoff,
         batchId: job.batchId,
         defectsRoot: this.store.defectsRoot,
         worktrees,
         sandbox,
+        toolchainNotes: [...provisioned.notes, ...(profile?.notes ?? [])],
+        toolchainEnv: provisioned.env,
+        sandboxProfile: profile?.profile,
+        verifyCommands: app?.verify_commands ?? [],
         onLog: (line, level, source) =>
           this.log(job, line, level ?? 'info', source ?? 'DefectDrainer'),
       });
@@ -868,14 +914,27 @@ export class BatchJobRunner {
         this.log(live, live.error, 'error');
         this.persist(live);
         // Still try harvest in case partial evidence was written
-        this.harvestFixEvidence(live, handoff);
+        this.harvestFixEvidence(live, handoff);  // no verification on a failed run
         this.syncBatchAndDefects(live, 'failed');
         return live;
       }
       live.status = 'completed';
-      this.log(live, 'Grok process exited OK — harvesting fix-evidence…');
+      // Gate BEFORE harvest: the operator's own commands decide whether this
+      // may resolve, not the presence of a screenshot the agent wrote.
+      const verification = runVerification({
+        commands: app?.verify_commands ?? [],
+        worktrees,
+        handoffAbs: handoff,
+        repoEntries: app?.repo_entries ?? [],
+        extraEnv: provisioned.env,
+        onLog: (line, level) =>
+          this.log(live, line, level ?? 'info', 'DefectDrainer'),
+      });
+      live.verification = verification;
+      this.log(live, `verify: ${summarizeVerification(verification)}`);
       this.persist(live);
-      this.harvestFixEvidence(live, handoff);
+      this.log(live, 'Grok process exited OK — harvesting fix-evidence…');
+      this.harvestFixEvidence(live, handoff, verification);
       this.syncBatchAndDefects(live, 'complete');
       this.log(
         live,
@@ -945,7 +1004,11 @@ export class BatchJobRunner {
    * - fix-notes/<DEF-id>.md → resolution text
    * Resolves defect when at least one fix image is present.
    */
-  private harvestFixEvidence(job: BatchJob, handoff: string): void {
+  private harvestFixEvidence(
+    job: BatchJob,
+    handoff: string,
+    verification?: VerificationRun,
+  ): void {
     const fixRoot = path.join(handoff, 'fix-evidence');
     const notesRoot = path.join(handoff, 'fix-notes');
     let imported = 0;
@@ -1003,12 +1066,28 @@ export class BatchJobRunner {
           );
         }
 
+        // Configured verification that did not pass blocks resolution; the
+        // fix stays in the worktree and the defect stays in_progress with the
+        // failure recorded, so the next run starts from a true state.
+        if (verification?.ran && !verification.ok) {
+          this.log(
+            job,
+            `harvest ${defectId}: NOT resolved — ${summarizeVerification(verification)}`,
+            'warn',
+          );
+          continue;
+        }
+
         if ((cur.fix_evidence?.length ?? 0) > 0) {
           this.store.resolve(defectId, {
             resolution:
               note ||
               cur.resolution ||
-              `fixed in batch ${job.batchId} (Grok + fix evidence)`,
+              `fixed in batch ${job.batchId} (Grok + fix evidence${
+                verification?.ran
+                  ? `; ${summarizeVerification(verification)}`
+                  : ''
+              })`,
             fix_evidence: cur.fix_evidence,
           });
           resolved += 1;
