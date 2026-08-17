@@ -5,8 +5,9 @@ That doc describes how the system behaves today; this one records **why** it was
 built and **what is deliberately not done**, so the next person does not have to
 rediscover either.
 
-Live status is tracked at the umbrella (`tasks/todo.md`, unversioned). This file
-is the durable plan.
+Live status is tracked at the umbrella `tasks/todo.md`. Task files are
+deliberately unversioned (backend `fe536d8` stopped tracking `tasks/`), so the
+reasoning that must survive lives here instead.
 
 ## The failure that started it
 
