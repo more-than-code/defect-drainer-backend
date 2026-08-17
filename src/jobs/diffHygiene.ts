@@ -69,6 +69,49 @@ export function worktreeHead(worktreeAbs: string): string {
  * Measured against a real case, `-w` saw 14% of the churn; this sees 41% of
  * hunks, matching what the diff actually contains.
  */
+export type DiffHunk = {
+  file: string;
+  header: string;
+  removed: string[];
+  added: string[];
+  /** Same code, different layout. */
+  reflow: boolean;
+};
+
+const stripAll = (ls: string[]) => ls.join('').replace(/\s+/gu, '');
+
+function parseHunks(diff: string): DiffHunk[] {
+  const out: DiffHunk[] = [];
+  let file = '';
+  let cur: DiffHunk | null = null;
+  const flush = () => {
+    if (cur && (cur.added.length || cur.removed.length)) {
+      cur.reflow = stripAll(cur.added) === stripAll(cur.removed);
+      out.push(cur);
+    }
+    cur = null;
+  };
+
+  for (const line of diff.split('\n')) {
+    if (line.startsWith('@@')) {
+      flush();
+      cur = { file, header: line, removed: [], added: [], reflow: false };
+      continue;
+    }
+    // Header lines, not content — `--- a/x` would otherwise read as a deletion.
+    if (line.startsWith('+++ ') || line.startsWith('--- ')) {
+      const m = line.match(/^\+\+\+ b\/(.+)$/);
+      if (m?.[1]) file = m[1];
+      continue;
+    }
+    if (!cur) continue;
+    if (line.startsWith('+')) cur.added.push(line.slice(1));
+    else if (line.startsWith('-')) cur.removed.push(line.slice(1));
+  }
+  flush();
+  return out;
+}
+
 function analyseDiff(diff: string): {
   hunks: number;
   reflowHunks: number;
@@ -76,43 +119,44 @@ function analyseDiff(diff: string): {
   reflowLines: number;
   files: Set<string>;
 } {
-  const files = new Set<string>();
+  const parsed = parseHunks(diff);
+  const files = new Set(parsed.map((h) => h.file).filter(Boolean));
   let hunks = 0;
   let reflowHunks = 0;
   let changedLines = 0;
   let reflowLines = 0;
-
-  let add: string[] = [];
-  let del: string[] = [];
-  const flush = () => {
-    if (!add.length && !del.length) return;
+  for (const h of parsed) {
+    const n = h.added.length + h.removed.length;
     hunks += 1;
-    changedLines += add.length + del.length;
-    const strip = (ls: string[]) => ls.join('').replace(/\s+/gu, '');
-    if (strip(add) === strip(del)) {
+    changedLines += n;
+    if (h.reflow) {
       reflowHunks += 1;
-      reflowLines += add.length + del.length;
+      reflowLines += n;
     }
-    add = [];
-    del = [];
-  };
-
-  for (const line of diff.split('\n')) {
-    if (line.startsWith('@@')) {
-      flush();
-      continue;
-    }
-    if (line.startsWith('+++ ') || line.startsWith('--- ')) {
-      const m = line.match(/^\+\+\+ b\/(.+)$/);
-      if (m?.[1]) files.add(m[1]);
-      continue;
-    }
-    if (line.startsWith('+')) add.push(line.slice(1));
-    else if (line.startsWith('-')) del.push(line.slice(1));
   }
-  flush();
-
   return { hunks, reflowHunks, changedLines, reflowLines, files };
+}
+
+/**
+ * The actual hunks behind the numbers, for the console's drill-down.
+ * Computed on demand from the worktree — diffs are not stored on the job.
+ */
+export function collectHunks(opts: {
+  worktreeAbs: string;
+  baseSha: string;
+  /** 'reflow' = layout-only hunks; 'all' = everything. */
+  kind: 'reflow' | 'all';
+  limit?: number;
+}): { hunks: DiffHunk[]; total: number; truncated: boolean } {
+  const limit = opts.limit ?? 200;
+  const diff = git(opts.worktreeAbs, ['diff', '--unified=0', opts.baseSha]);
+  const all = parseHunks(diff);
+  const picked = opts.kind === 'reflow' ? all.filter((h) => h.reflow) : all;
+  return {
+    hunks: picked.slice(0, limit),
+    total: picked.length,
+    truncated: picked.length > limit,
+  };
 }
 
 export function measureDiffHygiene(opts: {

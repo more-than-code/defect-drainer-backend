@@ -14,6 +14,7 @@ import {
 import { getAnalyticsSummary } from './analytics.js';
 import type { Db } from './db.js';
 import type { BatchJobRunner } from './jobs/batchJob.js';
+import { collectHunks } from './jobs/diffHygiene.js';
 import {
   resolveNormalizeMode,
   type NormalizeJobRunner,
@@ -641,6 +642,37 @@ export async function registerRoutes(
       return { job };
     },
   );
+
+  /**
+   * Hunks behind a job's diff-hygiene numbers, for the console drill-down.
+   * Computed on demand from the worktree — diffs are not stored on the job.
+   */
+  app.get<{
+    Params: { id: string; repo: string };
+    Querystring: { kind?: string; limit?: string };
+  }>('/api/batch-jobs/:id/diff/:repo', async (req, reply) => {
+    const job = batches.get(req.params.id);
+    if (!job) return reply.code(404).send({ error: 'not found' });
+    const wt = (job.worktrees || []).find((w) => w.repo === req.params.repo);
+    if (!wt) return reply.code(404).send({ error: `no worktree "${req.params.repo}" on this job` });
+    const baseSha = (job.diffHygiene?.repos || []).find(
+      (r) => r.repo === req.params.repo,
+    )?.baseSha;
+    if (!baseSha) {
+      return reply.code(409).send({ error: 'no diff baseline recorded for this job' });
+    }
+    if (!existsSync(wt.worktreeAbs)) {
+      return reply.code(410).send({ error: `worktree is gone: ${wt.worktreeAbs}` });
+    }
+    try {
+      const kind = req.query.kind === 'all' ? 'all' : 'reflow';
+      const limit = Math.min(Math.max(Number(req.query.limit ?? 50) || 50, 1), 200);
+      return { repo: req.params.repo, kind, ...collectHunks({ worktreeAbs: wt.worktreeAbs, baseSha, kind, limit }) };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return reply.code(500).send({ error: msg });
+    }
+  });
 
   /** Stop a running coding-agent batch job (SIGTERM → SIGKILL). */
   app.post<{ Params: { id: string } }>(
