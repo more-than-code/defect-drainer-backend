@@ -173,6 +173,35 @@ export function setBatchStatus(
   });
 }
 
+/**
+ * Pull the `## Acceptance` checklist out of a defect body.
+ *
+ * Normalize writes these criteria at intake (`jobs/normalizeJob.ts`) and until
+ * now nothing read them back, so the agent fixing the defect never saw what
+ * "fixed" was defined to mean. Returns the list items only; an empty result
+ * means the defect never carried criteria.
+ */
+export function acceptanceCriteria(body: string | undefined): string[] {
+  if (!body) return [];
+  const lines = body.split('\n');
+  const start = lines.findIndex((l) => /^#{1,6}\s+acceptance\b/i.test(l.trim()));
+  if (start < 0) return [];
+  const out: string[] = [];
+  for (const raw of lines.slice(start + 1)) {
+    const line = raw.trim();
+    if (/^#{1,6}\s/.test(line)) break; // next section ends the block
+    if (!line) continue;
+    // "- [ ] text" / "- [x] text" / "- text" / "1. text"
+    const item = line
+      .replace(/^[-*+]\s+/, '')
+      .replace(/^\d+[.)]\s+/, '')
+      .replace(/^\[[ xX]\]\s*/, '')
+      .trim();
+    if (item) out.push(item);
+  }
+  return out;
+}
+
 export function buildBatchFixBrief(input: {
   batch: BatchRecord;
   defects: DefectRecord[];
@@ -267,6 +296,13 @@ export function buildBatchFixBrief(input: {
     }
     if (d.resolution) {
       lines.push(`- **prior resolution note (historical):** ${d.resolution}`);
+    }
+    const acceptance = acceptanceCriteria(d.body);
+    if (acceptance.length) {
+      lines.push(
+        `- **acceptance criteria (THE BAR — address each one in fix-notes):**`,
+      );
+      for (const a of acceptance) lines.push(`  - [ ] ${a}`);
     }
     if (d.evidence?.length) {
       lines.push(`- **report evidence (intake — read for bug context):**`);
