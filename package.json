@@ -16,7 +16,8 @@
   },
   "dependencies": {
     "@fastify/multipart": "^9.0.3",
-    "fastify": "^5.2.1"
+    "fastify": "^5.2.1",
+    "koffi": "^2.12.1"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

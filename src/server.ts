@@ -4,6 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ensureSeededApps } from './apps.js';
 import { openDatabase } from './db.js';
+import { acquireDataLock } from './lock.js';
 import { BatchJobRunner } from './jobs/batchJob.js';
 import { NormalizeJobRunner } from './jobs/normalizeJob.js';
 import { envDrainer } from './env.js';
@@ -21,34 +22,49 @@ export async function buildApp(opts?: {
 }) {
   const defectsRoot = resolveDefectsRoot(opts?.defectsRoot);
   const dataRoot = resolveDataRoot(defectsRoot, opts?.dataRoot);
-  const db = openDatabase(dataRoot);
-  if (!opts?.skipMigrate) {
-    const mig = migrateFilesystemIfNeeded(db, defectsRoot);
-    if (mig.apps || mig.defects || mig.batches) {
-      // eslint-disable-next-line no-console
-      console.log(
-        `sqlite migrate: apps=${mig.apps} defects=${mig.defects} batches=${mig.batches}`,
-      );
+  const lock = acquireDataLock(dataRoot);
+  try {
+    const db = openDatabase(dataRoot);
+    if (!opts?.skipMigrate) {
+      const mig = migrateFilesystemIfNeeded(db, defectsRoot);
+      if (mig.apps || mig.defects || mig.batches) {
+        // eslint-disable-next-line no-console
+        console.log(
+          `sqlite migrate: apps=${mig.apps} defects=${mig.defects} batches=${mig.batches}`,
+        );
+      }
     }
+    ensureSeededApps(db);
+
+    const store = new DefectStore(db, defectsRoot);
+    const jobs = new NormalizeJobRunner(store, dataRoot);
+    const batches = new BatchJobRunner(store, dataRoot);
+
+    const app = Fastify({ logger: false });
+
+    await app.register(multipart, {
+      limits: {
+        fileSize: 25 * 1024 * 1024,
+        files: 12,
+      },
+    });
+
+    await registerRoutes(app, { store, jobs, batches, defectsRoot, db });
+
+    app.addHook('onClose', async () => {
+      try {
+        db.close();
+      } catch {
+        /* already closed */
+      }
+      lock.release();
+    });
+
+    return { app, store, jobs, batches, defectsRoot, dataRoot, db, lock };
+  } catch (err) {
+    lock.release();
+    throw err;
   }
-  ensureSeededApps(db);
-
-  const store = new DefectStore(db, defectsRoot);
-  const jobs = new NormalizeJobRunner(store, dataRoot);
-  const batches = new BatchJobRunner(store, dataRoot);
-
-  const app = Fastify({ logger: false });
-
-  await app.register(multipart, {
-    limits: {
-      fileSize: 25 * 1024 * 1024,
-      files: 12,
-    },
-  });
-
-  await registerRoutes(app, { store, jobs, batches, defectsRoot, db });
-
-  return { app, store, jobs, batches, defectsRoot, dataRoot, db };
 }
 
 async function main() {
