@@ -11,3 +11,9 @@ Harness API: inventory + AI coding-agent batch-fix jobs + PR actions. Framing: `
 - Cross-repo plans: `/Users/joe/workspace/defect-drainer/tasks/todo.md`
 - Local tasks: `tasks/todo.md` (this package only)
 - Run: `pnpm dev` → `127.0.0.1:8788`
+
+## Session ownership (worktree)
+
+**If `SESSION.md` exists at this repo root, read it at session start**
+(or before the first edit). It defines session ownership and off-limits paths.
+If absent, ignore this section — normal primary-tree work.
