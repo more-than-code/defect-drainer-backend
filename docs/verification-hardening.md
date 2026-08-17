@@ -30,6 +30,7 @@ dishonest, and neither was sufficient on its own.
 | 4 | Agent toolchain: pinned SDK cloned into the handoff | `jobs/provisionToolchain.ts` |
 | 5 | Job-scoped Simulator write grant | `jobs/sandboxProfile.ts` |
 | 6 | BRIEF names each worktree's own contract files (AGENTS.md / CLAUDE.md) | `batches.ts` (`contractFilesIn`) |
+| 7 | Diff-hygiene measurement: how much of the diff is reformatting | `jobs/diffHygiene.ts` |
 
 Design decisions worth not re-litigating:
 
@@ -44,18 +45,18 @@ Design decisions worth not re-litigating:
   path of each contract file that actually exists in that worktree, and says
   that where the repo's rules are stricter than DD's, the repo wins. Repos
   without one (e.g. `ttd-deploy`) simply get no such line.
+- **Reflow is detected per hunk, not by `git diff -w`.** `-w` compares line by
+  line, so a formatter joining three lines into one still reads as three
+  deletions and one addition. On the 2026-08-17 fix `-w` saw 14% of the churn;
+  comparing each hunk's added and removed text with all whitespace stripped saw
+  **34 of 82 hunks and 146 of 523 lines** — the actual reflow. Advisory only:
+  it never blocks a resolve.
 - **Repo-name aliasing.** Worktree bindings are named by app entry name on the
   entries path (`webapp`) and by git URL leaf on the `repo_urls` path
   (`ttd-webapp`). `bindingAliases()` resolves both through the app's own
   entry→url mapping — never by substring.
 
 ## Not done, and why
-
-### No diff-hygiene check
-Compare `git diff` against `git diff -w` at harvest. One 2026-08-17 fix touched
-400 lines across 41 hunks, of which **34 hunks and 162 lines were pure
-`dart format` reflow** of code the fix never needed to touch. Mechanically
-detectable, currently invisible.
 
 ### No second-pass reviewer
 Diffing a fix against the defect's acceptance criteria and the repo's

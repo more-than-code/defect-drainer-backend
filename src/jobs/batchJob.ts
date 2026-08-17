@@ -60,6 +60,11 @@ import {
 } from './provisionToolchain.js';
 import { writeSimulatorSandboxProfile } from './sandboxProfile.js';
 import {
+  measureDiffHygiene,
+  worktreeHead,
+  type DiffHygieneReport,
+} from './diffHygiene.js';
+import {
   judgeVerification,
   runVerification,
   summarizeVerdict,
@@ -100,6 +105,8 @@ export type BatchJob = {
   verification?: VerificationRun;
   /** Same commands run BEFORE the agent, so pre-existing red is attributable. */
   baseline?: VerificationRun;
+  /** How much of the resulting diff is reformatting rather than change. */
+  diffHygiene?: DiffHygieneReport;
 };
 
 function nowIso(): string {
@@ -884,6 +891,10 @@ export class BatchJobRunner {
           `sandbox: job profile '${profile.profile}' extends ${sandbox} + Simulator device writes`,
         );
       }
+      // Commit each worktree sits at now, so the diff can be measured against
+      // exactly what this run changed.
+      const diffBaseByRepo: Record<string, string> = {};
+      for (const w of worktrees) diffBaseByRepo[w.repo] = worktreeHead(w.worktreeAbs);
       // Baseline BEFORE the agent works: without it, red that was already
       // there (e.g. `flutter analyze` exiting 1 on old infos) blocks every
       // resolve and reads as damage this job did.
@@ -958,6 +969,12 @@ export class BatchJobRunner {
           this.log(live, line, level ?? 'info', 'DefectDrainer'),
       });
       live.verification = verification;
+      live.diffHygiene = measureDiffHygiene({
+        worktrees,
+        baseByRepo: diffBaseByRepo,
+        onLog: (line, level) =>
+          this.log(live, line, level ?? 'info', 'DefectDrainer'),
+      });
       const verdict = judgeVerification(verification, live.baseline);
       this.log(
         live,
