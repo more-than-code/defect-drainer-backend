@@ -1,8 +1,22 @@
+import { existsSync } from 'node:fs';
 import path from 'node:path';
 import type { Db } from './db.js';
 import { jsonArray, nowIso, parseJsonArray } from './db.js';
 import type { DefectRecord } from './store.js';
 import { isSafeId } from './store.js';
+
+/**
+ * Contract files a repo uses to state its own rules — mandatory gates, skills,
+ * conventions. The brief used to describe only DD's rules, so an agent learned
+ * a repo's gates only if it thought to look. In a 2026-08-17 comparison of two
+ * independent fixes of the same defect, the one that verified properly did so
+ * solely because it read AGENTS.md on its own initiative.
+ */
+const CONTRACT_FILES = ['AGENTS.md', 'CLAUDE.md', 'CONTRIBUTING.md'] as const;
+
+function contractFilesIn(worktreeAbs: string): string[] {
+  return CONTRACT_FILES.filter((f) => existsSync(path.join(worktreeAbs, f)));
+}
 
 /** Absolute inventory path for evidence relative paths (e.g. evidence/DEF-…/fix-01.png). */
 function inventoryEvidenceAbs(defectsRoot: string, rel: string): string {
@@ -255,6 +269,20 @@ export function buildBatchFixBrief(input: {
       lines.push(`- **worktree (EDIT HERE):** \`${w.worktreeAbs}\``);
       lines.push(`- **branch:** \`${w.branch}\``);
       lines.push(`- **primary (DO NOT EDIT):** \`${w.primaryAbs}\``);
+      const contracts = contractFilesIn(w.worktreeAbs);
+      if (contracts.length) {
+        lines.push(
+          `- **read first — this repo's own rules:** ${contracts
+            .map((f) => `\`${path.join(w.worktreeAbs, f)}\``)
+            .join(', ')}`,
+        );
+        lines.push(
+          `  They define that repo's mandatory gates, skills and conventions.`,
+        );
+        lines.push(
+          `  They bind you as much as this brief; where stricter, they win.`,
+        );
+      }
       lines.push(``);
     }
   } else {

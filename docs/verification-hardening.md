@@ -29,6 +29,7 @@ dishonest, and neither was sufficient on its own.
 | 3 | Acceptance criteria from the defect body rendered in BRIEF.md | `batches.ts` (`acceptanceCriteria`) |
 | 4 | Agent toolchain: pinned SDK cloned into the handoff | `jobs/provisionToolchain.ts` |
 | 5 | Job-scoped Simulator write grant | `jobs/sandboxProfile.ts` |
+| 6 | BRIEF names each worktree's own contract files (AGENTS.md / CLAUDE.md) | `batches.ts` (`contractFilesIn`) |
 
 Design decisions worth not re-litigating:
 
@@ -39,18 +40,16 @@ Design decisions worth not re-litigating:
 - **Unrunnable is never excused.** A command that could not run (bad repo name,
   missing worktree) blocks even when the baseline failed identically, so a typo
   cannot silently disable a check.
+- **Contract files are listed, not assumed.** The brief prints the absolute
+  path of each contract file that actually exists in that worktree, and says
+  that where the repo's rules are stricter than DD's, the repo wins. Repos
+  without one (e.g. `ttd-deploy`) simply get no such line.
 - **Repo-name aliasing.** Worktree bindings are named by app entry name on the
   entries path (`webapp`) and by git URL leaf on the `repo_urls` path
   (`ttd-webapp`). `bindingAliases()` resolves both through the app's own
   entry→url mapping — never by substring.
 
 ## Not done, and why
-
-### Brief does not point at the repo's own contract
-BRIEF.md never mentions the worktree's `AGENTS.md` / `CLAUDE.md` or the
-mandatory gates they define. In the cross-check above, the agent that verified
-properly did so *only* because it read `AGENTS.md` on its own initiative.
-Cheap to add; high value.
 
 ### No diff-hygiene check
 Compare `git diff` against `git diff -w` at harvest. One 2026-08-17 fix touched
