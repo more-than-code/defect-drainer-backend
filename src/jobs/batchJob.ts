@@ -60,7 +60,9 @@ import {
 } from './provisionToolchain.js';
 import { writeSimulatorSandboxProfile } from './sandboxProfile.js';
 import {
+  judgeVerification,
   runVerification,
+  summarizeVerdict,
   summarizeVerification,
   type VerificationRun,
 } from './runVerification.js';
@@ -96,6 +98,8 @@ export type BatchJob = {
   prs?: CreatePrResult[];
   /** Operator-defined verification re-run by DD; gates defect resolution. */
   verification?: VerificationRun;
+  /** Same commands run BEFORE the agent, so pre-existing red is attributable. */
+  baseline?: VerificationRun;
 };
 
 function nowIso(): string {
@@ -880,6 +884,26 @@ export class BatchJobRunner {
           `sandbox: job profile '${profile.profile}' extends ${sandbox} + Simulator device writes`,
         );
       }
+      // Baseline BEFORE the agent works: without it, red that was already
+      // there (e.g. `flutter analyze` exiting 1 on old infos) blocks every
+      // resolve and reads as damage this job did.
+      const verifyCommands = app?.verify_commands ?? [];
+      const baseline = verifyCommands.length
+        ? runVerification({
+            commands: verifyCommands,
+            worktrees,
+            handoffAbs: path.join(handoff, 'baseline'),
+            repoEntries: app?.repo_entries ?? [],
+            extraEnv: provisioned.env,
+            onLog: (line, level) =>
+              this.log(job, `baseline ${line}`, level ?? 'info', 'DefectDrainer'),
+          })
+        : undefined;
+      if (baseline?.ran) {
+        job.baseline = baseline;
+        this.log(job, `baseline: ${summarizeVerification(baseline)}`);
+        this.persist(job);
+      }
       const handle = spawnGrokBatchFix({
         handoffAbs: handoff,
         batchId: job.batchId,
@@ -889,7 +913,10 @@ export class BatchJobRunner {
         toolchainNotes: [...provisioned.notes, ...(profile?.notes ?? [])],
         toolchainEnv: provisioned.env,
         sandboxProfile: profile?.profile,
-        verifyCommands: app?.verify_commands ?? [],
+        verifyCommands,
+        alreadyFailing: (baseline?.results ?? [])
+          .filter((r) => !r.ok)
+          .map((r) => `${r.repo}: ${r.command}`),
         onLog: (line, level, source) =>
           this.log(job, line, level ?? 'info', source ?? 'DefectDrainer'),
       });
@@ -922,7 +949,7 @@ export class BatchJobRunner {
       // Gate BEFORE harvest: the operator's own commands decide whether this
       // may resolve, not the presence of a screenshot the agent wrote.
       const verification = runVerification({
-        commands: app?.verify_commands ?? [],
+        commands: verifyCommands,
         worktrees,
         handoffAbs: handoff,
         repoEntries: app?.repo_entries ?? [],
@@ -931,7 +958,12 @@ export class BatchJobRunner {
           this.log(live, line, level ?? 'info', 'DefectDrainer'),
       });
       live.verification = verification;
-      this.log(live, `verify: ${summarizeVerification(verification)}`);
+      const verdict = judgeVerification(verification, live.baseline);
+      this.log(
+        live,
+        `verify: ${summarizeVerdict(verdict)}`,
+        verdict.ok ? 'info' : 'warn',
+      );
       this.persist(live);
       this.log(live, 'Grok process exited OK — harvesting fix-evidence…');
       this.harvestFixEvidence(live, handoff, verification);
@@ -1066,13 +1098,13 @@ export class BatchJobRunner {
           );
         }
 
-        // Configured verification that did not pass blocks resolution; the
-        // fix stays in the worktree and the defect stays in_progress with the
-        // failure recorded, so the next run starts from a true state.
-        if (verification?.ran && !verification.ok) {
+        // Block on what THIS job broke or could not run — not on red that
+        // was already there before it started (see judgeVerification).
+        const verdict = judgeVerification(verification, job.baseline);
+        if (verification?.ran && !verdict.ok) {
           this.log(
             job,
-            `harvest ${defectId}: NOT resolved — ${summarizeVerification(verification)}`,
+            `harvest ${defectId}: NOT resolved — ${summarizeVerdict(verdict)}`,
             'warn',
           );
           continue;
@@ -1085,7 +1117,9 @@ export class BatchJobRunner {
               cur.resolution ||
               `fixed in batch ${job.batchId} (Grok + fix evidence${
                 verification?.ran
-                  ? `; ${summarizeVerification(verification)}`
+                  ? `; ${summarizeVerdict(
+                      judgeVerification(verification, job.baseline),
+                    )}`
                   : ''
               })`,
             fix_evidence: cur.fix_evidence,

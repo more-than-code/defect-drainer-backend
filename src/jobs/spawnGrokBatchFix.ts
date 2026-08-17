@@ -20,6 +20,8 @@ export type SpawnGrokBatchFixOpts = {
   sandboxProfile?: string;
   /** Operator verification commands DD re-runs after this session exits. */
   verifyCommands?: Array<{ repo: string; command: string }>;
+  /** Commands already failing at the base commit, from the baseline run. */
+  alreadyFailing?: string[];
   onLog: (
     line: string,
     level?: 'info' | 'warn' | 'error',
@@ -42,6 +44,7 @@ export function buildBatchFixCliPrompt(input: {
   sandbox: GrokSandboxProfile;
   toolchainNotes?: string[];
   verifyCommands?: Array<{ repo: string; command: string }>;
+  alreadyFailing?: string[];
 }): string {
   const wtLines = input.worktrees.length
     ? input.worktrees.map(
@@ -83,9 +86,18 @@ export function buildBatchFixCliPrompt(input: {
           ...input.verifyCommands.map(
             (v) => `- ${v.repo}: ${v.command}`,
           ),
-          `- Every one must exit 0 or NOTHING resolves, however good your screenshots are.`,
-          `- Run them yourself in the worktree before claiming DONE; fix what fails.`,
+          `- A command you BREAK blocks the resolve, however good your screenshots are.`,
+          `- Run them yourself in the worktree before claiming DONE; fix what you broke.`,
           `- Do not report test results you did not actually observe.`,
+          ...(input.alreadyFailing?.length
+            ? [
+                `- ALREADY FAILING before you started (measured, not your doing —`,
+                `  do not chase these unless the defect is about them):`,
+                ...input.alreadyFailing.map((f) => `    · ${f}`),
+              ]
+            : [
+                `- All of them passed before you started, so any failure after is yours.`,
+              ]),
         ]
       : []),
     ``,
@@ -140,6 +152,7 @@ export function spawnGrokBatchFix(
     sandbox,
     toolchainNotes: opts.toolchainNotes,
     verifyCommands: opts.verifyCommands,
+    alreadyFailing: opts.alreadyFailing,
   });
 
   const args = [

@@ -195,6 +195,87 @@ export function runVerification(opts: {
   return run;
 }
 
+/**
+ * How a post-fix result compares to the same command before the agent ran.
+ *
+ * - pass         — green now
+ * - regression   — was green at baseline, red now: this job broke it
+ * - pre-existing — was red at baseline too: not this job's doing
+ * - blocked      — could not run (bad repo name), or no baseline to compare to
+ *
+ * Only `regression` and `blocked` stop a defect resolving. Without this,
+ * long-standing red (e.g. `flutter analyze` exiting 1 on 5 old infos) would
+ * block every resolve and read as damage the agent did.
+ */
+export type VerifyVerdict = 'pass' | 'regression' | 'pre-existing' | 'blocked';
+
+function keyOf(r: { repo: string; command: string }): string {
+  return `${r.repo}\u0000${r.command}`;
+}
+
+export function classifyResult(
+  result: VerifyResult,
+  baseline: VerificationRun | undefined,
+): VerifyVerdict {
+  if (result.ok) return 'pass';
+  // A command that could not run is a configuration fault, never excused by a
+  // baseline that failed for the same reason.
+  if (result.skipped_reason) return 'blocked';
+  if (!baseline?.ran) return 'blocked';
+  const before = baseline.results.find((b) => keyOf(b) === keyOf(result));
+  if (!before) return 'blocked';
+  if (before.skipped_reason) return 'blocked';
+  return before.ok ? 'regression' : 'pre-existing';
+}
+
+export type VerificationVerdict = {
+  /** True when nothing this job did should stop the defect resolving. */
+  ok: boolean;
+  verdicts: Array<{ result: VerifyResult; verdict: VerifyVerdict }>;
+  regressions: number;
+  preExisting: number;
+  /** Red at baseline, green now. */
+  fixed: number;
+};
+
+export function judgeVerification(
+  run: VerificationRun | undefined,
+  baseline: VerificationRun | undefined,
+): VerificationVerdict {
+  const verdicts = (run?.results ?? []).map((result) => ({
+    result,
+    verdict: classifyResult(result, baseline),
+  }));
+  const regressions = verdicts.filter((v) => v.verdict === 'regression').length;
+  const blocked = verdicts.filter((v) => v.verdict === 'blocked').length;
+  const preExisting = verdicts.filter((v) => v.verdict === 'pre-existing').length;
+  const fixed = (baseline?.results ?? []).filter((b) => {
+    if (b.ok) return false;
+    const now = (run?.results ?? []).find((r) => keyOf(r) === keyOf(b));
+    return !!now?.ok;
+  }).length;
+  return {
+    ok: regressions === 0 && blocked === 0,
+    verdicts,
+    regressions,
+    preExisting,
+    fixed,
+  };
+}
+
+/** Human summary of a judged run, for the job log and the defect note. */
+export function summarizeVerdict(v: VerificationVerdict): string {
+  if (!v.verdicts.length) return 'no verification commands configured';
+  const pass = v.verdicts.filter((x) => x.verdict === 'pass').length;
+  const bits = [`${pass}/${v.verdicts.length} passed`];
+  if (v.regressions) bits.push(`${v.regressions} regression(s)`);
+  const blocked = v.verdicts.filter((x) => x.verdict === 'blocked').length;
+  if (blocked) bits.push(`${blocked} could not run`);
+  if (v.preExisting) bits.push(`${v.preExisting} already failing before this job`);
+  if (v.fixed) bits.push(`${v.fixed} newly fixed`);
+  return bits.join(', ');
+}
+
 /** One-line summary for the job log / defect note. */
 export function summarizeVerification(run: VerificationRun): string {
   if (!run.ran) return 'no verification commands configured';
