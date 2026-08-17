@@ -13,8 +13,6 @@ import { resolveDataRoot, resolveDefectsRoot } from './paths.js';
 import { registerRoutes } from './routes.js';
 import { DefectStore } from './store.js';
 
-loadEnvFile();
-
 export async function buildApp(opts?: {
   defectsRoot?: string;
   dataRoot?: string;
@@ -54,6 +52,9 @@ export async function buildApp(opts?: {
 }
 
 async function main() {
+  // Load .env here, not at module scope: importing buildApp (tests) must not
+  // pick up a developer's local config, or ambient env changes test outcomes.
+  loadEnvFile();
   const host = envDrainer('HOST') ?? '127.0.0.1';
   const port = Number(envDrainer('PORT') ?? '8788');
   const { app, defectsRoot, dataRoot } = await buildApp();

@@ -8,6 +8,7 @@ import {
   getApp,
   getDefaultAppId,
   listApps,
+  parseBaseSource,
   updateAppSettings,
 } from './apps.js';
 import { getAnalyticsSummary } from './analytics.js';
@@ -24,6 +25,7 @@ import { multiSearch } from './search/query.js';
 import { reindexAll } from './search/reindex.js';
 import type { DefectStore } from './store.js';
 import { isSafeId } from './store.js';
+import { chooseLocalFolder, listRepoBranches } from './worktrees.js';
 
 export type RouteDeps = {
   store: DefectStore;
@@ -159,10 +161,17 @@ export async function registerRoutes(
       description?: string;
       workspace_root?: string;
       repos?: string[];
-      repo_entries?: Array<{ name?: string; url?: string } | string>;
+      repo_entries?: Array<{
+        name?: string;
+        url?: string;
+        base_source?: string;
+        base_branch?: string;
+      } | string>;
       repo_url?: string;
       repo_urls?: string[];
       grok_sandbox?: string;
+      base_remote?: string;
+      base_branch?: string;
       default?: boolean;
     };
   }>('/api/apps', async (req, reply) => {
@@ -177,6 +186,8 @@ export async function registerRoutes(
         repo_url: b.repo_url,
         repo_urls: b.repo_urls,
         grok_sandbox: b.grok_sandbox,
+        base_remote: b.base_remote,
+        base_branch: b.base_branch,
         default: b.default,
       });
       return reply.code(201).send({ app });
@@ -202,10 +213,17 @@ export async function registerRoutes(
       description?: string;
       workspace_root?: string;
       repos?: string[];
-      repo_entries?: Array<{ name?: string; url?: string } | string> | null;
+      repo_entries?: Array<{
+        name?: string;
+        url?: string;
+        base_source?: string;
+        base_branch?: string;
+      } | string> | null;
       repo_url?: string | null;
       repo_urls?: string[] | null;
       grok_sandbox?: string;
+      base_remote?: string;
+      base_branch?: string;
       default?: boolean;
     };
   }>('/api/apps/:id', async (req, reply) => {
@@ -215,6 +233,37 @@ export async function registerRoutes(
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (msg.includes('unknown')) return reply.code(404).send({ error: msg });
+      return reply.code(400).send({ error: msg });
+    }
+  });
+
+  /**
+   * List branches on a GitHub remote or a local checkout for the Settings dropdown.
+   * Body: { source: 'origin' | 'local', location: url-or-absolute-path }
+   */
+  app.post<{
+    Body: { source?: string; location?: string };
+  }>('/api/git/branches', async (req, reply) => {
+    try {
+      const source = parseBaseSource(req.body?.source);
+      const location = String(req.body?.location ?? '').trim();
+      return listRepoBranches({ source, location });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return reply.code(400).send({ error: msg });
+    }
+  });
+
+  /**
+   * Open Finder (macOS) so the operator can pick a local checkout.
+   * Blocks until choose/cancel. Returns { path } or { cancelled: true }.
+   */
+  app.post('/api/git/choose-folder', async (_req, reply) => {
+    try {
+      const result = chooseLocalFolder();
+      return result;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
       return reply.code(400).send({ error: msg });
     }
   });
@@ -420,6 +469,7 @@ export async function registerRoutes(
     let surface = '';
     let area = '';
     let source = '';
+    let reporter = '';
     let app_id = '';
     let mode: string | undefined;
     const repos: string[] = [];
@@ -439,6 +489,7 @@ export async function registerRoutes(
         else if (part.fieldname === 'surface') surface = v;
         else if (part.fieldname === 'area') area = v;
         else if (part.fieldname === 'source') source = v;
+        else if (part.fieldname === 'reporter') reporter = v;
         else if (part.fieldname === 'app_id') app_id = v;
         else if (part.fieldname === 'mode') mode = v;
         else if (part.fieldname === 'repos') {
@@ -455,6 +506,7 @@ export async function registerRoutes(
         surface: surface || undefined,
         area: area || undefined,
         source: source || undefined,
+        reporter: reporter || undefined,
         app_id: app_id || undefined,
         repos: repos.length ? [...new Set(repos)] : undefined,
         files,
@@ -479,6 +531,7 @@ export async function registerRoutes(
       surface?: string;
       area?: string;
       source?: string;
+      reporter?: string;
       app_id?: string;
       repos?: string[] | string;
       mode?: string;
@@ -499,6 +552,7 @@ export async function registerRoutes(
         surface: b.surface,
         area: b.area,
         source: b.source,
+        reporter: b.reporter,
         app_id: b.app_id,
         repos,
         files: [],

@@ -42,7 +42,10 @@ export type DefectRecord = {
   repos: string[];
   labels: string[];
   related: string[];
+  /** How it was detected: detector or lens name (e.g. `parity-review`, `console`). */
   source: string;
+  /** Who filed it: operator name or agent tool. Empty for records filed before this existed. */
+  reporter: string;
   key_files: string[];
   evidence: string[];
   fix_evidence: string[];
@@ -53,6 +56,8 @@ export type DefectRecord = {
   duplicate_of?: string;
   body: string;
   bucket: 'open' | 'resolved';
+  /** Report instant, ISO 8601 UTC. `reported` is UTC date-only; this carries the time. */
+  created_at: string;
   /** Synthetic path for API compatibility */
   path: string;
 };
@@ -93,6 +98,7 @@ type DefectRow = {
   labels_json: string;
   related_json: string;
   source: string;
+  reporter: string;
   key_files_json: string;
   evidence_json: string;
   fix_evidence_json: string;
@@ -103,6 +109,7 @@ type DefectRow = {
   resolved_date: string | null;
   duplicate_of: string | null;
   bucket: string;
+  created_at: string;
 };
 
 function rowToDefect(row: DefectRow): DefectRecord {
@@ -120,6 +127,7 @@ function rowToDefect(row: DefectRow): DefectRecord {
     labels: parseJsonArray(row.labels_json),
     related: parseJsonArray(row.related_json),
     source: row.source,
+    reporter: row.reporter || '',
     key_files: parseJsonArray(row.key_files_json),
     evidence: parseJsonArray(row.evidence_json),
     fix_evidence: parseJsonArray(row.fix_evidence_json),
@@ -130,6 +138,7 @@ function rowToDefect(row: DefectRow): DefectRecord {
     resolved_date: row.resolved_date || undefined,
     duplicate_of: row.duplicate_of || undefined,
     bucket,
+    created_at: row.created_at,
     path: `${bucket}/${row.id}.md`,
   };
 }
@@ -181,7 +190,8 @@ export class DefectStore {
   }
 
   write(
-    record: Omit<DefectRecord, 'path' | 'bucket'> & {
+    // `created_at` is store-owned: set on insert, preserved on update.
+    record: Omit<DefectRecord, 'path' | 'bucket' | 'created_at'> & {
       bucket?: 'open' | 'resolved';
     },
   ): DefectRecord {
@@ -203,6 +213,7 @@ export class DefectStore {
     const client = (record.client || 'unknown').trim() || 'unknown';
     const surface = (record.surface || '').trim();
     const source = (record.source || '').trim() || 'unknown';
+    const reporter = (record.reporter || '').trim();
     const title = (record.title || '').trim() || 'Untitled defect';
 
     if (existing) {
@@ -210,7 +221,7 @@ export class DefectStore {
         .prepare(
           `UPDATE defects SET
             app_id=?, title=?, severity=?, status=?, area=?, client=?, surface=?,
-            repos_json=?, labels_json=?, related_json=?, source=?, key_files_json=?,
+            repos_json=?, labels_json=?, related_json=?, source=?, reporter=?, key_files_json=?,
             evidence_json=?, fix_evidence_json=?, reported=?, summary=?, body=?,
             resolution=?, resolved_date=?, duplicate_of=?, bucket=?, updated_at=?
            WHERE id=?`,
@@ -227,6 +238,7 @@ export class DefectStore {
           jsonArray(record.labels),
           jsonArray(record.related),
           source,
+          reporter,
           jsonArray(record.key_files),
           jsonArray(record.evidence),
           jsonArray(record.fix_evidence ?? []),
@@ -245,10 +257,10 @@ export class DefectStore {
         .prepare(
           `INSERT INTO defects (
             id, app_id, title, severity, status, area, client, surface,
-            repos_json, labels_json, related_json, source, key_files_json,
+            repos_json, labels_json, related_json, source, reporter, key_files_json,
             evidence_json, fix_evidence_json, reported, summary, body,
             resolution, resolved_date, duplicate_of, bucket, created_at, updated_at
-          ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         )
         .run(
           record.id,
@@ -263,6 +275,7 @@ export class DefectStore {
           jsonArray(record.labels),
           jsonArray(record.related),
           source,
+          reporter,
           jsonArray(record.key_files),
           jsonArray(record.evidence),
           jsonArray(record.fix_evidence ?? []),
@@ -494,6 +507,7 @@ export class DefectStore {
       labels: asStringArray(frontmatter.labels),
       related: asStringArray(frontmatter.related),
       source: asString(frontmatter.source, 'screenshot+comment'),
+      reporter: asString(frontmatter.reporter),
       key_files: asStringArray(frontmatter.key_files),
       evidence,
       fix_evidence: asStringArray(frontmatter.fix_evidence),

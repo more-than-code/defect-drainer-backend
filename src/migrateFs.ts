@@ -123,11 +123,11 @@ function migrateDefects(db: Db, defectsRoot: string): number {
   const insert = db.prepare(`
     INSERT INTO defects (
       id, app_id, title, severity, status, area, client, surface,
-      repos_json, labels_json, related_json, source, key_files_json,
+      repos_json, labels_json, related_json, source, reporter, key_files_json,
       evidence_json, fix_evidence_json, reported, summary, body,
       resolution, resolved_date, duplicate_of, bucket, created_at, updated_at
     ) VALUES (
-      ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?
+      ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?
     )
   `);
 
@@ -174,6 +174,7 @@ function migrateDefects(db: Db, defectsRoot: string): number {
           jsonArray(asStringArray(frontmatter.labels)),
           jsonArray(asStringArray(frontmatter.related)),
           asString(frontmatter.source, 'screenshot+comment'),
+          asString(frontmatter.reporter),
           jsonArray(asStringArray(frontmatter.key_files)),
           jsonArray(asStringArray(frontmatter.evidence)),
           jsonArray(asStringArray(frontmatter.fix_evidence)),

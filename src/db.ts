@@ -20,6 +20,9 @@ CREATE TABLE IF NOT EXISTS apps (
   repo_urls_json TEXT NOT NULL DEFAULT '[]',
   /** Agent sandbox profile: strict | workspace (per App Settings) */
   grok_sandbox TEXT NOT NULL DEFAULT 'strict',
+  /** Batch-fix base: worktrees branch from <base_remote>/<base_branch>; PRs target base_branch. */
+  base_remote TEXT NOT NULL DEFAULT 'origin',
+  base_branch TEXT NOT NULL DEFAULT 'main',
   is_default INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
@@ -38,6 +41,8 @@ CREATE TABLE IF NOT EXISTS defects (
   labels_json TEXT NOT NULL DEFAULT '[]',
   related_json TEXT NOT NULL DEFAULT '[]',
   source TEXT NOT NULL DEFAULT '',
+  /** Who filed it: operator name or agent tool. source is HOW it was detected. */
+  reporter TEXT NOT NULL DEFAULT '',
   key_files_json TEXT NOT NULL DEFAULT '[]',
   evidence_json TEXT NOT NULL DEFAULT '[]',
   fix_evidence_json TEXT NOT NULL DEFAULT '[]',
@@ -146,6 +151,7 @@ export function openDatabase(dataRoot: string): Db {
   db.exec('PRAGMA foreign_keys = ON;');
   db.exec(SCHEMA);
   migrateAppColumns(db);
+  migrateDefectColumns(db);
   ensureDefectsFts(db);
   return db;
 }
@@ -160,6 +166,27 @@ function migrateAppColumns(db: Db): void {
     db.exec(
       `ALTER TABLE apps ADD COLUMN grok_sandbox TEXT NOT NULL DEFAULT 'strict'`,
     );
+  }
+  if (!names.has('base_remote')) {
+    db.exec(
+      `ALTER TABLE apps ADD COLUMN base_remote TEXT NOT NULL DEFAULT 'origin'`,
+    );
+  }
+  if (!names.has('base_branch')) {
+    db.exec(
+      `ALTER TABLE apps ADD COLUMN base_branch TEXT NOT NULL DEFAULT 'main'`,
+    );
+  }
+}
+
+/** Additive column upgrades for existing SQLite files. */
+function migrateDefectColumns(db: Db): void {
+  const cols = db
+    .prepare(`PRAGMA table_info(defects)`)
+    .all() as Array<{ name: string }>;
+  const names = new Set(cols.map((c) => c.name));
+  if (!names.has('reporter')) {
+    db.exec(`ALTER TABLE defects ADD COLUMN reporter TEXT NOT NULL DEFAULT ''`);
   }
 }
 

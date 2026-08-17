@@ -4,11 +4,17 @@ import type { Db } from './db.js';
 import { jsonArray, nowIso, parseJsonArray } from './db.js';
 import { envDrainer } from './env.js';
 
-/** Named git remote for an app (Settings). Name is shown on Report ticks. */
+export type AppBaseSource = 'origin' | 'local';
+
+/** Named repo for an app (Settings). Name is shown on Report ticks. */
 export type AppRepoEntry = {
   name: string;
-  /** Git remote URL; empty when name-only (local workspace fallback). */
+  /** GitHub URL when base_source is origin; absolute checkout path when local. */
   url: string;
+  /** Worktree source for this repo. Default inferred from url. */
+  base_source?: AppBaseSource;
+  /** Branch this repo's worktrees branch from / PRs target. */
+  base_branch?: string;
 };
 
 /**
@@ -33,8 +39,42 @@ export type AppRecord = {
   repo_urls?: string[];
   /** Per-app agent sandbox (App Settings). Default strict. API: grok_sandbox. */
   grok_sandbox?: GrokSandboxProfile;
+  /** Remote whose tracking ref batch worktrees branch from. Default `origin`. */
+  base_remote?: string;
+  /** Branch batch worktrees branch from, and the PR target. Default `main`. */
+  base_branch?: string;
   default?: boolean;
 };
+
+export function parseBaseSource(
+  v: unknown,
+  fallback: AppBaseSource = 'origin',
+): AppBaseSource {
+  const s = String(v ?? '')
+    .trim()
+    .toLowerCase();
+  if (s === 'local') return 'local';
+  if (s === 'origin' || s === 'github') return 'origin';
+  return fallback;
+}
+
+function inferBaseSource(url: string, explicit?: unknown): AppBaseSource {
+  if (explicit !== undefined && explicit !== null && String(explicit).trim()) {
+    return parseBaseSource(explicit);
+  }
+  const u = url.trim();
+  if (u.startsWith('/') || u.startsWith('file://')) return 'local';
+  return 'origin';
+}
+
+/** Git ref names we are willing to pass to git/gh: no spaces, no option-looking values. */
+export function parseGitRefName(v: unknown, fallback: string): string {
+  const s = String(v ?? '').trim();
+  if (!s) return fallback;
+  if (!/^[A-Za-z0-9._\/-]{1,120}$/.test(s)) return fallback;
+  if (s.startsWith('-') || s.includes('..') || s.endsWith('/')) return fallback;
+  return s;
+}
 
 /** Accept CLI names plus UI alias "restrict" → strict. */
 export function parseGrokSandbox(v: unknown): GrokSandboxProfile {
@@ -62,23 +102,40 @@ export function nameFromRepoUrl(url: string): string {
   return leaf.replace(/\.git$/i, '') || 'repo';
 }
 
+type RepoEntryInput = {
+  name?: string;
+  url?: string;
+  base_source?: string;
+  base_branch?: string;
+};
+
 /** Normalize API/settings rows into unique name→url entries. */
 export function normalizeRepoEntries(
-  entries: Array<{ name?: string; url?: string } | string>,
+  entries: Array<RepoEntryInput | string>,
 ): AppRepoEntry[] {
   const out: AppRepoEntry[] = [];
   for (const e of entries) {
     if (typeof e === 'string') {
       const url = e.trim();
       if (!url) continue;
-      out.push({ name: nameFromRepoUrl(url), url });
+      out.push({
+        name: nameFromRepoUrl(url),
+        url,
+        base_source: inferBaseSource(url),
+      });
       continue;
     }
     const url = String(e?.url ?? '').trim();
     const name =
       String(e?.name ?? '').trim() || (url ? nameFromRepoUrl(url) : '');
     if (!name && !url) continue;
-    out.push({ name: name || nameFromRepoUrl(url), url });
+    const branch = parseGitRefName(e?.base_branch, '');
+    out.push({
+      name: name || nameFromRepoUrl(url),
+      url,
+      base_source: inferBaseSource(url, e?.base_source),
+      ...(branch ? { base_branch: branch } : {}),
+    });
   }
   const byName = new Map<string, AppRepoEntry>();
   for (const e of out) byName.set(e.name, e);
@@ -112,6 +169,10 @@ export function parseStoredRepoEntries(
         (raw as Array<Record<string, unknown>>).map((o) => ({
           name: String(o.name ?? o.repo ?? ''),
           url: String(o.url ?? o.repo_url ?? ''),
+          base_source:
+            o.base_source !== undefined ? String(o.base_source) : undefined,
+          base_branch:
+            o.base_branch !== undefined ? String(o.base_branch) : undefined,
         })),
       );
     }
@@ -142,21 +203,17 @@ function persistRepoColumns(entries: AppRepoEntry[]): {
   const clean = normalizeRepoEntries(entries);
   const names = clean.map((e) => e.name);
   const withUrl = clean.filter((e) => e.url);
-  if (withUrl.length > 0) {
-    const urls = withUrl.map((e) => e.url);
-    return {
-      repos_json: jsonArray(names),
-      repo_url: urls.length === 1 ? urls[0]! : null,
-      // Always store objects so names survive round-trip
-      repo_urls_json: JSON.stringify(
-        clean.map((e) => ({ name: e.name, url: e.url })),
-      ),
-    };
-  }
   return {
     repos_json: jsonArray(names),
-    repo_url: null,
-    repo_urls_json: '[]',
+    repo_url: withUrl.length === 1 ? withUrl[0]!.url : null,
+    repo_urls_json: JSON.stringify(
+      clean.map((e) => ({
+        name: e.name,
+        url: e.url,
+        base_source: e.base_source ?? inferBaseSource(e.url),
+        ...(e.base_branch ? { base_branch: e.base_branch } : {}),
+      })),
+    ),
   };
 }
 
@@ -251,6 +308,8 @@ type AppRow = {
   repo_url: string | null;
   repo_urls_json: string;
   grok_sandbox?: string | null;
+  base_remote?: string | null;
+  base_branch?: string | null;
   is_default: number;
 };
 
@@ -272,11 +331,13 @@ function rowToApp(row: AppRow): AppRecord {
     repo_url: urls.length === 1 ? urls[0] : undefined,
     repo_urls: urls.length > 1 ? urls : undefined,
     grok_sandbox: parseGrokSandbox(row.grok_sandbox),
+    base_remote: parseGitRefName(row.base_remote, 'origin'),
+    base_branch: parseGitRefName(row.base_branch, 'main'),
     default: !!row.is_default,
   };
 }
 
-const APP_SELECT = `id, name, description, workspace_root, repos_json, repo_url, repo_urls_json, grok_sandbox, is_default`;
+const APP_SELECT = `id, name, description, workspace_root, repos_json, repo_url, repo_urls_json, grok_sandbox, base_remote, base_branch, is_default`;
 
 export function listApps(db: Db): AppRecord[] {
   const rows = db
@@ -297,8 +358,8 @@ export function ensureSeededApps(db: Db): void {
   const ins = db.prepare(`
     INSERT INTO apps (
       id, name, description, workspace_root, repos_json, repo_url, repo_urls_json,
-      grok_sandbox, is_default, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      grok_sandbox, base_remote, base_branch, is_default, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   for (const a of seededApps()) {
     ins.run(
@@ -310,6 +371,8 @@ export function ensureSeededApps(db: Db): void {
       a.repo_url ?? null,
       jsonArray(a.repo_urls ?? []),
       parseGrokSandbox(a.grok_sandbox),
+      parseGitRefName(a.base_remote, 'origin'),
+      parseGitRefName(a.base_branch, 'main'),
       a.default ? 1 : 0,
       ts,
       ts,
@@ -374,7 +437,7 @@ export function getAppRepoUrls(app: AppRecord | undefined): string[] {
 }
 
 function entriesFromAppInput(input: {
-  repo_entries?: Array<{ name?: string; url?: string } | string>;
+  repo_entries?: Array<RepoEntryInput | string>;
   repos?: string[];
   repo_url?: string | null;
   repo_urls?: string[] | null;
@@ -412,10 +475,12 @@ export function createApp(
     description?: string;
     workspace_root?: string;
     repos?: string[];
-    repo_entries?: Array<{ name?: string; url?: string } | string>;
+    repo_entries?: Array<RepoEntryInput | string>;
     repo_url?: string;
     repo_urls?: string[];
     grok_sandbox?: GrokSandboxProfile | string;
+    base_remote?: string;
+    base_branch?: string;
     default?: boolean;
   },
 ): AppRecord {
@@ -446,8 +511,8 @@ export function createApp(
   db.prepare(
     `INSERT INTO apps (
       id, name, description, workspace_root, repos_json, repo_url, repo_urls_json,
-      grok_sandbox, is_default, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      grok_sandbox, base_remote, base_branch, is_default, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     id,
     name,
@@ -457,6 +522,8 @@ export function createApp(
     cols.repo_url,
     cols.repo_urls_json,
     grok_sandbox,
+    parseGitRefName(input.base_remote, 'origin'),
+    parseGitRefName(input.base_branch, 'main'),
     makeDefault ? 1 : 0,
     ts,
     ts,
@@ -473,10 +540,12 @@ export function updateAppSettings(
     description?: string;
     workspace_root?: string;
     repos?: string[];
-    repo_entries?: Array<{ name?: string; url?: string } | string> | null;
+    repo_entries?: Array<RepoEntryInput | string> | null;
     repo_url?: string | null;
     repo_urls?: string[] | null;
     grok_sandbox?: GrokSandboxProfile | string;
+    base_remote?: string;
+    base_branch?: string;
     default?: boolean;
   },
 ): AppRecord {
@@ -494,6 +563,12 @@ export function updateAppSettings(
   }
   if (patch.grok_sandbox !== undefined) {
     next.grok_sandbox = parseGrokSandbox(patch.grok_sandbox);
+  }
+  if (patch.base_remote !== undefined) {
+    next.base_remote = parseGitRefName(patch.base_remote, 'origin');
+  }
+  if (patch.base_branch !== undefined) {
+    next.base_branch = parseGitRefName(patch.base_branch, 'main');
   }
 
   let entries: AppRepoEntry[] = cur.repo_entries?.length
@@ -556,7 +631,8 @@ export function updateAppSettings(
   db.prepare(
     `UPDATE apps SET
       name = ?, description = ?, workspace_root = ?, repos_json = ?,
-      repo_url = ?, repo_urls_json = ?, grok_sandbox = ?, is_default = ?, updated_at = ?
+      repo_url = ?, repo_urls_json = ?, grok_sandbox = ?, base_remote = ?,
+      base_branch = ?, is_default = ?, updated_at = ?
      WHERE id = ?`,
   ).run(
     next.name,
@@ -566,6 +642,8 @@ export function updateAppSettings(
     cols.repo_url,
     cols.repo_urls_json,
     parseGrokSandbox(next.grok_sandbox),
+    parseGitRefName(next.base_remote, 'origin'),
+    parseGitRefName(next.base_branch, 'main'),
     next.default ? 1 : 0,
     ts,
     id,

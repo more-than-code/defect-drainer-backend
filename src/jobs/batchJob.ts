@@ -10,6 +10,8 @@ import path from 'node:path';
 import {
   getApp,
   getAppRepoUrls,
+  parseBaseSource,
+  parseGitRefName,
   resolveGrokSandbox,
   resolvePrimaryRepos,
 } from '../apps.js';
@@ -39,7 +41,11 @@ import {
   attachRepoUrls,
   createBatchWorktrees,
   createPullRequestsForWorktrees,
+  DEFAULT_BASE,
+  ensureCloneFromUrl,
+  type BaseConfig,
   hasTrackablePrs,
+  isLocalBaseRemote,
   parseGitRepoUrl,
   primariesFromRepoUrls,
   refreshPullRequestStatuses,
@@ -309,6 +315,31 @@ export class BatchJobRunner {
     return getBatch(this.store.db, id);
   }
 
+  /** App-level fallback when a repo entry has no source/branch of its own. */
+  private baseConfigFor(appId: string): BaseConfig {
+    const app = getApp(this.store.db, appId);
+    return {
+      remote: app?.base_remote || DEFAULT_BASE.remote,
+      branch: app?.base_branch || DEFAULT_BASE.branch,
+    };
+  }
+
+  /** Per-repo base from Settings entries; missing names fall back to the app default. */
+  private baseByRepoFor(appId: string): Record<string, BaseConfig> {
+    const app = getApp(this.store.db, appId);
+    const fallback = this.baseConfigFor(appId);
+    const out: Record<string, BaseConfig> = {};
+    for (const e of app?.repo_entries ?? []) {
+      if (!e.name) continue;
+      const source = parseBaseSource(e.base_source, fallback.remote === 'local' ? 'local' : 'origin');
+      out[e.name] = {
+        remote: source === 'local' ? 'local' : 'origin',
+        branch: parseGitRefName(e.base_branch, fallback.branch),
+      };
+    }
+    return out;
+  }
+
   /**
    * Create product worktrees for this batch (fail-closed).
    * Prefer explicit repo_urls (clone + worktree); else app workspace_root checkouts.
@@ -323,10 +354,67 @@ export class BatchJobRunner {
       job.jobId,
       'worktrees',
     );
+    const app = getApp(this.store.db, job.app_id);
+    const fallback = this.baseConfigFor(job.app_id);
+    const baseByRepo = this.baseByRepoFor(job.app_id);
+    const wanted = new Set<string>();
+    for (const list of defectRepos) {
+      for (const r of list) {
+        const n = r.trim();
+        if (n) wanted.add(n);
+      }
+    }
+
+    const entries = (app?.repo_entries ?? []).filter((e) => e.name);
+    const selected = wanted.size
+      ? entries.filter((e) => wanted.has(e.name))
+      : entries;
+
     let primaryByRepo: Record<string, string>;
     let urlByRepo: Record<string, string> = {};
+    let fetchFirst = false;
 
-    if (repoUrls.length) {
+    if (selected.length) {
+      primaryByRepo = {};
+      const clonesRoot = path.join(this.dataRoot, 'clones');
+      for (const e of selected) {
+        const cfg =
+          baseByRepo[e.name] ?? {
+            remote:
+              parseBaseSource(e.base_source, fallback.remote === 'local' ? 'local' : 'origin') ===
+              'local'
+                ? 'local'
+                : 'origin',
+            branch: parseGitRefName(e.base_branch, fallback.branch),
+          };
+        baseByRepo[e.name] = cfg;
+        if (isLocalBaseRemote(cfg.remote)) {
+          const loc =
+            e.url.trim() ||
+            (app?.workspace_root
+              ? path.join(app.workspace_root, e.name)
+              : '');
+          if (!loc) {
+            throw new Error(
+              `${e.name}: local checkout path required (set the repo path in Settings)`,
+            );
+          }
+          if (!path.isAbsolute(loc)) {
+            throw new Error(`${e.name}: local checkout must be an absolute path`);
+          }
+          primaryByRepo[e.name] = path.resolve(loc);
+          this.log(job, `local checkout: ${e.name} → ${primaryByRepo[e.name]}`);
+        } else {
+          if (!e.url.trim()) {
+            throw new Error(`${e.name}: GitHub repo URL required`);
+          }
+          const cloned = ensureCloneFromUrl(e.url, clonesRoot);
+          primaryByRepo[e.name] = cloned.primaryAbs;
+          urlByRepo[e.name] = cloned.url;
+          this.log(job, `clone ready: ${e.name} ← ${cloned.url}`);
+        }
+      }
+    } else if (repoUrls.length) {
       const clonesRoot = path.join(this.dataRoot, 'clones');
       this.log(job, `cloning/fetching ${repoUrls.length} repo URL(s) → ${clonesRoot}`);
       primaryByRepo = primariesFromRepoUrls(repoUrls, clonesRoot);
@@ -340,6 +428,7 @@ export class BatchJobRunner {
         app_id: job.app_id,
         defectRepos,
       });
+      fetchFirst = !isLocalBaseRemote(fallback.remote);
     }
 
     this.log(job, `creating worktrees under ${worktreesRoot}`);
@@ -347,6 +436,11 @@ export class BatchJobRunner {
       batchId: job.batchId,
       worktreesRoot,
       primaryByRepo,
+      base: fallback,
+      baseByRepo,
+      fetchFirst,
+      onLog: (line, level) =>
+        this.log(job, line, level ?? 'info', 'DefectDrainer'),
     });
     if (Object.keys(urlByRepo).length) {
       bindings = attachRepoUrls(bindings, urlByRepo);
@@ -640,6 +734,8 @@ export class BatchJobRunner {
       batchId: job.batchId,
       title,
       body,
+      base: this.baseConfigFor(job.app_id),
+      baseByRepo: this.baseByRepoFor(job.app_id),
       onLog: (line, level) =>
         this.log(job, line, level ?? 'info', 'DefectDrainer'),
     });

@@ -64,9 +64,44 @@ describe('defect-drainer API', () => {
       patchApp.json().app.repo_entries[0].url,
       'https://github.com/example/ttd-webapp.git',
     );
+    assert.equal(patchApp.json().app.repo_entries[0].base_source, 'origin');
     assert.equal(patchApp.json().app.id, SEEDED_TUTORED_WEBAPP_APP_ID);
     // default sandbox is strict (restrict)
     assert.equal(patchApp.json().app.grok_sandbox, 'strict');
+
+    const patchPerRepo = await app.inject({
+      method: 'PATCH',
+      url: `/api/apps/${SEEDED_TUTORED_WEBAPP_APP_ID}`,
+      payload: {
+        repo_entries: [
+          {
+            name: 'webapp',
+            url: 'https://github.com/example/ttd-webapp.git',
+            base_source: 'origin',
+            base_branch: 'dev',
+          },
+          {
+            name: 'mobile',
+            url: '/Users/joe/workspace/tutored/ttd-mobileapp',
+            base_source: 'local',
+            base_branch: 'dev',
+          },
+        ],
+      },
+    });
+    assert.equal(patchPerRepo.statusCode, 200);
+    const entries = patchPerRepo.json().app.repo_entries;
+    assert.equal(entries[0].base_source, 'origin');
+    assert.equal(entries[0].base_branch, 'dev');
+    assert.equal(entries[1].base_source, 'local');
+    assert.equal(entries[1].url, '/Users/joe/workspace/tutored/ttd-mobileapp');
+
+    const branchesBad = await app.inject({
+      method: 'POST',
+      url: '/api/git/branches',
+      payload: { source: 'local', location: '' },
+    });
+    assert.equal(branchesBad.statusCode, 400);
 
     const patchSandbox = await app.inject({
       method: 'PATCH',
@@ -115,6 +150,7 @@ describe('defect-drainer API', () => {
         surface: 'practice hub',
         app_id: SEEDED_TUTORED_WEBAPP_APP_ID,
         repos: ['webapp'],
+        reporter: 'parity-harness',
         mode: 'local',
       },
     });
@@ -141,6 +177,26 @@ describe('defect-drainer API', () => {
     assert.match(one.json().defect.summary, /Submit button/i);
     assert.equal(one.json().defect.app_id, SEEDED_TUTORED_WEBAPP_APP_ID);
     assert.deepEqual(one.json().defect.repos, ['webapp']);
+    // reporter supplied at intake survives normalize → SSOT → API
+    assert.equal(one.json().defect.reporter, 'parity-harness');
+
+    // omitting reporter is valid and yields '' (not an error, not undefined)
+    const anon = await app.inject({
+      method: 'POST',
+      url: '/api/intake/json',
+      payload: {
+        comment: 'Anonymous intake without a reporter',
+        app_id: SEEDED_TUTORED_WEBAPP_APP_ID,
+        mode: 'local',
+      },
+    });
+    assert.equal(anon.statusCode, 202);
+    const anonOne = await app.inject({
+      method: 'GET',
+      url: `/api/defects/${anon.json().job.defectId}`,
+    });
+    assert.equal(anonOne.statusCode, 200);
+    assert.equal(anonOne.json().defect.reporter, '');
 
     const patch = await app.inject({
       method: 'PATCH',

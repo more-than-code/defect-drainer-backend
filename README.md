@@ -51,7 +51,9 @@ curl -X POST http://127.0.0.1:8788/api/search/reindex
 | `GET` | `/api/apps` | List apps + default |
 | `POST` | `/api/apps` | Create app (onboarding) — generates `app_` + hash id |
 | `GET` | `/api/apps/:id` | One app |
-| `PATCH` | `/api/apps/:id` | Settings: `repo_url` / `repo_urls`, name, repos, … |
+| `PATCH` | `/api/apps/:id` | Settings: `repo_entries` (name, url, base_source, base_branch), name, … |
+| `POST` | `/api/git/branches` | List heads: `{ source: origin\|local, location }` |
+| `POST` | `/api/git/choose-folder` | macOS Finder folder picker → `{ path }` or `{ cancelled }` (host must be the operator Mac) |
 | `DELETE` | `/api/apps/:id` | Remove app from registry (defects kept) |
 
 Batches:
@@ -76,12 +78,22 @@ Batches:
 }
 ```
 
-`repo_url` / `repo_urls` come from the console. When set, backend **clones** into `backend/.data/clones/<name>/` then creates worktrees. When omitted, falls back to app `workspace_root` local checkouts.
+Each Settings repo row has `base_source` (`origin` = GitHub URL, `local` = absolute checkout path) and `base_branch` (heads from `POST /api/git/branches`). Batch fix uses those per repo: GitHub rows clone into `backend/.data/clones/<name>/` from `origin/<base_branch>`; local rows use the path as the worktree primary (no fetch, uncommitted files ignored). Console **Location** is empty when switching to Local checkout; a folder button calls `POST /api/git/choose-folder` (macOS Finder). App-level `base_remote` / `base_branch` remain fallbacks for rows that omit them.
+
+**Intake / defect records:**
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `POST` | `/api/intake` | Multipart report (files + fields). Optional `reporter` = who filed it |
+| `POST` | `/api/intake/json` | Same fields without files |
+| `GET` | `/api/defects` | List. Each item includes `created_at` (ISO UTC instant) and `reporter` (empty on pre-field rows) |
+
+`source` is how it was detected (`parity-review`, `console`, …). `reporter` is who filed it (operator name or agent tool). Do not conflate them. `reported` remains UTC date-only; prefer `created_at` for display/sort.
 
 **Worktree isolation (enforced when `start_fix: true`):**
 
-1. Prefer `repo_url(s)` → clone/fetch under `.data/clones/`; else defect `repos` + app `workspace_root`.
-2. `git worktree add -b defect-drainer/<BATCH-id> …/<jobId>/worktrees/<repo> <main|master>` per repo.
+1. Prefer each app `repo_entries` row (source + location + branch). Else `repo_url(s)` → clone under `.data/clones/`; else `workspace_root`.
+2. `git worktree add -b defect-drainer/<BATCH-id> …/<jobId>/worktrees/<repo> <base>` per repo (`origin/<base_branch>` or local `<base_branch>`).
 3. The agent job is **refused** if worktree setup fails or list is empty (fail-closed).
 4. BRIEF lists **worktree (EDIT)** vs **primary (DO NOT EDIT)**.
 5. Worktrees are **not** auto-merged/removed after the agent exits — review then merge `defect-drainer/BATCH-…` yourself.

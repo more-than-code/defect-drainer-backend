@@ -52,6 +52,34 @@ describe('DefectStore (sqlite)', () => {
     assert.equal(isSafeId('../etc'), false);
   });
 
+  it('adds reporter to a defects table created without it', () => {
+    // Simulate a pre-existing DB file: drop the column by rebuilding the table
+    // without it, then reopen to prove the additive migration runs.
+    const legacyData = mkdtempSync(path.join(tmpdir(), 'defects-legacy-'));
+    try {
+      const legacy = openDatabase(legacyData);
+      legacy.exec(`ALTER TABLE defects DROP COLUMN reporter`);
+      const before = (
+        legacy.prepare(`PRAGMA table_info(defects)`).all() as Array<{
+          name: string;
+        }>
+      ).map((c) => c.name);
+      assert.equal(before.includes('reporter'), false, 'column removed');
+      legacy.close();
+
+      const reopened = openDatabase(legacyData);
+      const after = (
+        reopened.prepare(`PRAGMA table_info(defects)`).all() as Array<{
+          name: string;
+        }>
+      ).map((c) => c.name);
+      assert.equal(after.includes('reporter'), true, 'migration re-added it');
+      reopened.close();
+    } finally {
+      rmSync(legacyData, { recursive: true, force: true });
+    }
+  });
+
   it('creates ids', () => {
     const id = makeDefectId('Chat cards missing');
     assert.match(id, /^DEF-\d{8}-chat-cards-missing-[a-z0-9]+$/);
@@ -72,6 +100,7 @@ describe('DefectStore (sqlite)', () => {
       labels: ['ui'],
       related: [],
       source: 'test',
+      reporter: 'test-operator',
       key_files: [],
       evidence: [],
       fix_evidence: [],
@@ -84,9 +113,26 @@ describe('DefectStore (sqlite)', () => {
     assert.ok(got);
     assert.equal(got.bucket, 'open');
     assert.equal(got.title, 'CRUD test');
+    assert.equal(got.reporter, 'test-operator', 'reporter round-trips');
+    // created_at carries the report instant (`reported` is UTC date-only)
+    assert.ok(got.created_at, 'created_at is set on insert');
+    assert.ok(
+      Number.isFinite(Date.parse(got.created_at)),
+      `created_at parses as a date: ${got.created_at}`,
+    );
 
     store.update(id, { title: 'CRUD test updated' });
     assert.equal(store.get(id)?.title, 'CRUD test updated');
+    assert.equal(
+      store.get(id)?.reporter,
+      'test-operator',
+      'reporter is preserved across updates',
+    );
+    assert.equal(
+      store.get(id)?.created_at,
+      got.created_at,
+      'created_at is preserved across updates',
+    );
 
     assert.throws(
       () => store.resolve(id, { resolution: 'fixed in test' }),

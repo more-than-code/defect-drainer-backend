@@ -45,6 +45,8 @@ export type NormalizeJob = {
   repos: string[];
   /** Intake origin: web-ui | sdk | api | … */
   source: string;
+  /** Who filed it: operator name or agent tool. Empty when not supplied. */
+  reporter: string;
   createdAt: string;
   updatedAt: string;
   error?: string;
@@ -62,6 +64,8 @@ export type IntakeInput = {
   app_id?: string;
   /** Origin tag stored on the defect (default screenshot+comment). */
   source?: string;
+  /** Who filed it: operator name (console) or agent tool name (bridge/detector). */
+  reporter?: string;
   /** Repo names the issue relates to (from Report checkboxes). */
   repos?: string[];
   files: Array<{ filename: string; data: Buffer }>;
@@ -191,6 +195,7 @@ export class NormalizeJobRunner {
       app_id,
       repos,
       source,
+      reporter: input.reporter?.trim() || '',
       createdAt: nowIso(),
       updatedAt: nowIso(),
       log: [],
@@ -220,6 +225,7 @@ export class NormalizeJobRunner {
       area: input.area ?? '',
       app_id: job.app_id,
       source: job.source,
+      reporter: job.reporter,
       repos: job.repos,
       reported: today(),
       evidence: evidenceNames.map((name) => `evidence/${name}`),
@@ -306,9 +312,11 @@ export class NormalizeJobRunner {
       reported: string;
       area?: string;
       source?: string;
+      reporter?: string;
       app_id?: string;
     };
     const source = request.source || job.source || 'screenshot+comment';
+    const reporter = request.reporter || job.reporter || '';
     const app_id =
       request.app_id || job.app_id || getDefaultAppId(this.store.db);
     const title =
@@ -368,6 +376,7 @@ export class NormalizeJobRunner {
         labels: ['intake'],
         related: [],
         source,
+        reporter,
         key_files: [],
         evidence: evidenceRel,
         fix_evidence: [],
@@ -460,10 +469,12 @@ function buildBrief(request: {
   reported: string;
   evidence: string[];
   source?: string;
+  reporter?: string;
   app_id?: string;
   repos?: string[];
 }): string {
   const source = request.source || 'screenshot+comment';
+  const reporter = request.reporter || '';
   const app_id = request.app_id || SEEDED_TUTORED_WEBAPP_APP_ID;
   const reposYaml =
     request.repos?.length
@@ -483,6 +494,7 @@ function buildBrief(request: {
 | app_id | \`${app_id}\` |
 | status | \`open\` |
 | source | \`${source}\` |
+| reporter | \`${reporter || '(not supplied)'}\` |
 | severity default | \`${request.severity}\` |
 | client hint | \`${request.client}\` |
 | surface hint | \`${request.surface || '(none)'}\` |
@@ -513,6 +525,7 @@ ${reposYaml}
 labels: []
 related: []
 source: ${source}
+reporter: ${reporter}   # copy verbatim; empty is fine — never invent one
 key_files: []
 evidence:
   - evidence/${request.defectId}/01.png   # final store paths after promote; use this id

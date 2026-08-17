@@ -133,17 +133,181 @@ export function isGitRepo(dir: string): boolean {
   }
 }
 
-/** Prefer main, then master, then current HEAD. */
-export function resolveBaseRef(primaryAbs: string): string {
-  for (const ref of ['main', 'master']) {
-    try {
-      git(primaryAbs, ['rev-parse', '--verify', ref]);
-      return ref;
-    } catch {
-      /* try next */
-    }
+/** Per-app base: worktrees branch from `<remote>/<branch>`; PRs target `branch`. */
+export type BaseConfig = { remote: string; branch: string };
+
+export type BaseRef = {
+  /** What to branch the worktree from, e.g. `origin/main`. */
+  ref: string;
+  /** Bare branch name for `gh pr create --base`, e.g. `main`. */
+  branch: string;
+  resolvedFrom: 'remote' | 'local' | 'master' | 'head';
+};
+
+export const DEFAULT_BASE: BaseConfig = { remote: 'origin', branch: 'main' };
+
+/** Sentinel `base_remote`: use the local checkout branch, not a remote-tracking ref. */
+export const LOCAL_BASE_REMOTE = 'local';
+
+export function isLocalBaseRemote(remote: string | undefined): boolean {
+  return (remote || '').trim().toLowerCase() === LOCAL_BASE_REMOTE;
+}
+
+function refExists(primaryAbs: string, ref: string): boolean {
+  try {
+    git(primaryAbs, ['rev-parse', '--verify', '--quiet', ref]);
+    return true;
+  } catch {
+    return false;
   }
-  return 'HEAD';
+}
+
+/**
+ * Remote-first so a stale local branch can't silently become the base:
+ * `<remote>/<branch>` → local `<branch>` → `master` (only when branch is the
+ * default `main`, so existing master repos keep working) → `HEAD`.
+ */
+export function resolveBaseRef(
+  primaryAbs: string,
+  base: BaseConfig = DEFAULT_BASE,
+): BaseRef {
+  const remote = base.remote || DEFAULT_BASE.remote;
+  const branch = base.branch || DEFAULT_BASE.branch;
+
+  if (isLocalBaseRemote(remote)) {
+    if (refExists(primaryAbs, branch)) {
+      return { ref: branch, branch, resolvedFrom: 'local' };
+    }
+    return { ref: 'HEAD', branch, resolvedFrom: 'head' };
+  }
+
+  const remoteRef = `${remote}/${branch}`;
+  if (refExists(primaryAbs, remoteRef)) {
+    return { ref: remoteRef, branch, resolvedFrom: 'remote' };
+  }
+  if (refExists(primaryAbs, branch)) {
+    return { ref: branch, branch, resolvedFrom: 'local' };
+  }
+  if (branch === DEFAULT_BASE.branch && refExists(primaryAbs, 'master')) {
+    return { ref: 'master', branch: 'master', resolvedFrom: 'master' };
+  }
+  return { ref: 'HEAD', branch, resolvedFrom: 'head' };
+}
+
+/**
+ * Best-effort refresh of `<remote>/<branch>` before it is used as a base.
+ * Updates remote-tracking refs only — never the working tree or local branches.
+ * Swallows failure (offline, no remote) so batch fixes still run.
+ */
+export function fetchBaseRef(primaryAbs: string, base: BaseConfig): boolean {
+  if (isLocalBaseRemote(base.remote)) return false;
+  try {
+    git(primaryAbs, ['fetch', base.remote, base.branch]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * List branch names on a GitHub remote or a local checkout.
+ * Used by Settings to populate the per-repo base-branch dropdown.
+ */
+export function listRepoBranches(opts: {
+  source: 'origin' | 'local';
+  location: string;
+}): { branches: string[]; current?: string } {
+  const location = opts.location.trim();
+  if (!location) throw new Error('location is required');
+
+  if (opts.source === 'local') {
+    if (!path.isAbsolute(location)) {
+      throw new Error('local checkout must be an absolute path');
+    }
+    if (location.includes('\0')) throw new Error('invalid path');
+    const abs = path.resolve(location);
+    if (!existsSync(abs)) throw new Error(`path not found: ${abs}`);
+    if (!isGitRepo(abs)) throw new Error(`not a git repo: ${abs}`);
+    const branches = git(abs, [
+      'for-each-ref',
+      '--format=%(refname:short)',
+      'refs/heads',
+    ])
+      .split('\n')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    let current: string | undefined;
+    try {
+      current = git(abs, ['branch', '--show-current']) || undefined;
+    } catch {
+      current = undefined;
+    }
+    return { branches, current };
+  }
+
+  const { url } = parseGitRepoUrl(location);
+  let raw = '';
+  try {
+    raw = execFileSync('git', ['ls-remote', '--heads', url], {
+      encoding: 'utf8',
+      timeout: 30_000,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(`git ls-remote failed: ${msg}`);
+  }
+  const branches: string[] = [];
+  const seen = new Set<string>();
+  for (const line of raw.split('\n')) {
+    const m = line.match(/refs\/heads\/(\S+)\s*$/);
+    if (!m?.[1] || seen.has(m[1])) continue;
+    seen.add(m[1]);
+    branches.push(m[1]);
+  }
+  return { branches };
+}
+
+export function parseOsascriptFolderPath(stdout: string): string {
+  const p = stdout.trim().replace(/\/+$/, '');
+  if (!p || p.includes('\0')) throw new Error('invalid folder path');
+  const abs = path.resolve(p);
+  if (!path.isAbsolute(abs)) throw new Error('invalid folder path');
+  return abs;
+}
+
+export function isOsascriptUserCancel(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return msg.includes('-128') || /user canceled/i.test(msg);
+}
+
+/**
+ * Open the host Finder folder picker (macOS only).
+ * Blocks until the operator chooses or cancels. No user-controlled script text.
+ */
+export function chooseLocalFolder(): { path?: string; cancelled?: boolean } {
+  if (process.platform !== 'darwin') {
+    throw new Error('Finder folder picker is only available on macOS');
+  }
+  try {
+    const raw = execFileSync(
+      'osascript',
+      [
+        '-e',
+        'POSIX path of (choose folder with prompt "Select a local git checkout")',
+      ],
+      {
+        encoding: 'utf8',
+        timeout: 300_000,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      },
+    );
+    return { path: parseOsascriptFolderPath(raw) };
+  } catch (err) {
+    if (isOsascriptUserCancel(err)) return { cancelled: true };
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(`Finder picker failed: ${msg}`);
+  }
 }
 
 /**
@@ -156,7 +320,15 @@ export function createBatchWorktrees(opts: {
   worktreesRoot: string;
   /** Map repo name → absolute primary checkout */
   primaryByRepo: Record<string, string>;
+  /** Per-app base (default origin/main). Overridden by baseByRepo. */
+  base?: BaseConfig;
+  /** Per-repo base when sources differ. */
+  baseByRepo?: Record<string, BaseConfig>;
+  /** Refresh the remote-tracking ref first (workspace primaries aren't fetched elsewhere). */
+  fetchFirst?: boolean;
+  onLog?: (line: string, level?: 'info' | 'warn' | 'error') => void;
 }): WorktreeBinding[] {
+  const log = opts.onLog ?? (() => undefined);
   const repos = Object.keys(opts.primaryByRepo).sort();
   if (!repos.length) {
     throw new Error(
@@ -200,7 +372,22 @@ export function createBatchWorktrees(opts: {
       /* branch does not exist */
     }
 
-    const base = resolveBaseRef(primaryAbs);
+    const baseCfg = opts.baseByRepo?.[repo] ?? opts.base ?? DEFAULT_BASE;
+    if (opts.fetchFirst || !isLocalBaseRemote(baseCfg.remote)) {
+      const ok = fetchBaseRef(primaryAbs, baseCfg);
+      log(
+        ok
+          ? `${repo}: fetched ${baseCfg.remote}/${baseCfg.branch}`
+          : `${repo}: fetch of ${baseCfg.remote}/${baseCfg.branch} failed — using refs on disk`,
+        ok ? 'info' : 'warn',
+      );
+    }
+    const base = resolveBaseRef(primaryAbs, baseCfg);
+    // A fallback means we are NOT on the configured remote base — say so loudly.
+    log(
+      `${repo}: base ${base.ref} (${base.resolvedFrom}), PR target ${base.branch}`,
+      base.resolvedFrom === 'remote' ? 'info' : 'warn',
+    );
     try {
       git(primaryAbs, [
         'worktree',
@@ -208,14 +395,14 @@ export function createBatchWorktrees(opts: {
         '-b',
         branch,
         worktreeAbs,
-        base,
+        base.ref,
       ]);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       // roll back any worktrees already created in this batch
       removeBatchWorktrees(bindings);
       throw new Error(
-        `git worktree add failed for ${repo} (base=${base}, branch=${branch}): ${msg}`,
+        `git worktree add failed for ${repo} (base=${base.ref}, branch=${branch}): ${msg}`,
       );
     }
 
@@ -455,13 +642,22 @@ export function createPullRequestsForWorktrees(opts: {
   batchId: string;
   title: string;
   body: string;
+  /** Per-app base (default origin/main). Must match what the worktree was created from. */
+  base?: BaseConfig;
+  /** Per-repo base when sources differ. */
+  baseByRepo?: Record<string, BaseConfig>;
   onLog?: (line: string, level?: 'info' | 'warn' | 'error') => void;
 }): CreatePrResult[] {
   const log = opts.onLog ?? (() => undefined);
   const results: CreatePrResult[] = [];
 
   for (const b of opts.bindings) {
-    const base = resolveBaseRef(b.primaryAbs);
+    const resolved = resolveBaseRef(
+      b.primaryAbs,
+      opts.baseByRepo?.[b.repo] ?? opts.base ?? DEFAULT_BASE,
+    );
+    // `gh --base` takes a branch name; ref comparisons take the resolved ref.
+    const base = resolved.branch;
     const entry: CreatePrResult = {
       repo: b.repo,
       branch: b.branch,
@@ -526,14 +722,16 @@ export function createPullRequestsForWorktrees(opts: {
         }
       }
 
+      // resolved.ref is already remote-qualified when it came from the remote,
+      // so never prefix it again (that produced `origin/origin/main`).
       let commits = 0;
       try {
         commits = Number(
-          git(b.worktreeAbs, ['rev-list', '--count', `${base}..HEAD`]),
+          git(b.worktreeAbs, ['rev-list', '--count', `${resolved.ref}..HEAD`]),
         );
       } catch {
         commits = Number(
-          git(b.worktreeAbs, ['rev-list', '--count', `origin/${base}..HEAD`]),
+          git(b.worktreeAbs, ['rev-list', '--count', `${base}..HEAD`]),
         );
       }
       entry.commits = commits;
@@ -541,7 +739,7 @@ export function createPullRequestsForWorktrees(opts: {
         entry.status = 'skipped';
         entry.error = 'no commits ahead of base';
         results.push(entry);
-        log(`${b.repo}: skip — no commits vs ${base}`, 'warn');
+        log(`${b.repo}: skip — no commits vs ${resolved.ref}`, 'warn');
         continue;
       }
 
