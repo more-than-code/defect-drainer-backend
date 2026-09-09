@@ -1,9 +1,13 @@
 # defect-drainer-backend
 
+**Retired as the live API (2026-08-19).** The operator process is `backend-go/` (`defect-drainer serve`). This tree is **rollback only**.
+
 **In-workspace path:** `backend/`  
 **Git repo name (when initialized):** `defect-drainer-backend`
 
-**Harness API** for the defect-drainer umbrella: inventory (intake, defects, evidence), **AI coding-agent batch-fix jobs** (worktrees, logs, stop/re-run), and host **PR** actions. Product language is runner-agnostic — see umbrella [`docs/workflow.md`](../docs/workflow.md).
+**Harness API** (TypeScript) for the defect-drainer umbrella: inventory (intake, defects, evidence), **AI coding-agent batch-fix jobs** (worktrees, logs, stop/re-run), and host **PR** actions. Product language is runner-agnostic — see umbrella [`docs/workflow.md`](../docs/workflow.md).
+
+Do not run `pnpm dev` while Go is listening — both flock `{DATA}/defect-drainer.lock`. Rollback: stop Go, then:
 
 SQLite SSOT: `backend/.data/defect-drainer.db`. Evidence binaries under umbrella `../evidence/`.
 

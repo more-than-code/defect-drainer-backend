@@ -56,18 +56,11 @@ Design decisions worth not re-litigating:
   (`ttd-webapp`). `bindingAliases()` resolves both through the app's own
   entry→url mapping — never by substring.
 
-## Go control plane: partial
+## Go control plane
 
-`backend-go` mirrors the TS contract as of `f4d6ba9`, i.e. before this work.
-The app settings are ported (columns, `AppRecord`, `NormalizeVerifyCommands`,
-`ParseAgentToolchain`, PATCH/create); the **job behaviour is not** — no
-verification run, no baseline, no diff hygiene, no toolchain or sandbox
-provisioning, and the brief lacks acceptance criteria and contract files.
-
-Cutting over to Go before that port lands would silently restore the original
-failure: a defect resolving because a PNG exists. Remaining items and the
-coordination hazard with the go-rewrite session are in the umbrella
-`tasks/todo.md`.
+Ported on `backend-go` `dev` (`c530772`, 2026-08-19): verification runner,
+baseline/verdict, harvest gate, diff hygiene, toolchain, job-scoped sandbox,
+and BRIEF.md. Live process is `defect-drainer serve`. TS `backend/` is rollback.
 
 ## Not done, and why
 
