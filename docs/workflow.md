@@ -113,12 +113,22 @@ Both fail soft: a warning and the previous behaviour, never a failed job.
 |-----------------|-------------------|
 | **Workspace isolation** | `git worktree` per product repo from that repo’s configured base (GitHub remote-tracking ref or local committed branch); never edit primary checkouts |
 | **Permissions / sandbox** | OS-level sandbox profiles (`strict` / `workspace`) per app |
-| **Brief / handoff** | `BRIEF.md` + defect payloads under job handoff dir |
+| **Brief / handoff** | `BRIEF.md` (role, facts, decisions, deliverables, defects) + `PROCESS.md` (worker contract) + `SKILLS.md` (per-worktree skill and contract paths) under the job handoff dir |
 | **Observability** | Job log stream (harness lines vs agent lines) |
 | **Stop / re-run** | Console job actions |
 | **Deterministic ops** | Create PR, refresh merge state, resolve — host tools, not “hope the model did it” |
 
 The **coding agent is a worker inside the harness**, not the product. The harness owns inventory, gates (fix-backed-by-evidence), and git/PR actions.
+
+That role is now explicit rather than implied: the child process carries
+`SKILL_FORGE_AGENT_ROLE=worker`, `BRIEF.md` opens with a Role section, and
+`PROCESS.md` records the mappings a general process file cannot know about a
+headless job — the operator's Start Batch click *is* the spec approval, scope is
+the listed defect ids, commit in the worktree and never push, and the worker's
+ledger is `NOTES.md`, not `tasks/todo.md`. Completion is measured in files:
+`NOTES.md`, `fix-notes/<id>.md` and `fix-evidence/<id>/fix-01.png`, with exact
+lines `UNFIXED: <id>` to decline a defect and `NO-SCREENSHOT: <id>` where the
+sandbox blocks capture. A `DONE` reply without those files is ignored.
 
 ---
 

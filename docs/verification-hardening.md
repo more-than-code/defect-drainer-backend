@@ -31,6 +31,7 @@ dishonest, and neither was sufficient on its own.
 | 5 | Job-scoped Simulator write grant | `jobs/sandboxProfile.ts` |
 | 6 | BRIEF names each worktree's own contract files (AGENTS.md / CLAUDE.md) | `batches.ts` (`contractFilesIn`) |
 | 7 | Diff-hygiene measurement: how much of the diff is reformatting | `jobs/diffHygiene.ts` |
+| 8 | Worker role: BRIEF declares it, `PROCESS.md` is the contract, `SKILLS.md` lists per-worktree skill paths, `SKILL_FORGE_AGENT_ROLE=worker` on the child (PR-H1, Go only) | `jobs/worker_files.go`, `jobs/brief.go`, `git/spawn.go` |
 
 Design decisions worth not re-litigating:
 
@@ -41,10 +42,17 @@ Design decisions worth not re-litigating:
 - **Unrunnable is never excused.** A command that could not run (bad repo name,
   missing worktree) blocks even when the baseline failed identically, so a typo
   cannot silently disable a check.
-- **Contract files are listed, not assumed.** The brief prints the absolute
-  path of each contract file that actually exists in that worktree, and says
-  that where the repo's rules are stricter than DD's, the repo wins. Repos
-  without one (e.g. `ttd-deploy`) simply get no such line.
+- **Contract files and skills are listed, not assumed.** The generated
+  `SKILLS.md` prints, per worktree, the absolute path of each contract file
+  that exists there plus every `SKILL.md` found under `.agents/skills`,
+  `.claude/skills` and `.grok/skills` — name, one-line summary and path, never
+  the body (a `|` / `>` frontmatter block folds into that one line).
+  Where the repo's rules are stricter than DD's, the repo wins. Paths rather
+  than copies because the agent's cwd is the job handoff, so directory-based
+  discovery never fires; and per worktree rather than merged because two repos
+  may vendor the same skill name at different paths. Repos without either
+  (e.g. `ttd-deploy`) say so explicitly and fall back to the default set.
+  Unreadable frontmatter is listed as such and never fails the job.
 - **Reflow is detected per hunk, not by `git diff -w`.** `-w` compares line by
   line, so a formatter joining three lines into one still reads as three
   deletions and one addition. On the 2026-08-17 fix `-w` saw 14% of the churn;
