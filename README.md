@@ -1,6 +1,22 @@
 # defect-drainer-backend
 
-**Retired as the live API (2026-08-19).** The operator process is `backend-go/` (`defect-drainer serve`). This tree is **rollback only**.
+> **ARCHIVED 2026-09-22.** This tree was deleted from the `defect-drainer`
+> umbrella workspace and exists only as this remote. It is no longer a rollback
+> path and receives no ports of new work.
+>
+> Where things went:
+>
+> | Was here | Now |
+> |---|---|
+> | `.data/` (SQLite SSOT, job handoffs, clones — never in git) | `backend-go/.data/` |
+> | `.env` (Phase B OpenSearch config) | `backend-go/.env` |
+> | `docs/workflow.md`, `docs/verification-hardening.md` | `backend-go/docs/` (copies remain here, frozen) |
+> | `docker-compose.search.yml` | `deploy/docker-compose.search.yml` |
+> | the live API | `backend-go/` (`defect-drainer-backend-go`) |
+>
+> Everything below describes the tree as it was when retired.
+
+**Retired as the live API (2026-08-19).** The operator process is `backend-go/` (`defect-drainer serve`). This tree was **rollback only** until it was archived.
 
 **In-workspace path:** `backend/`  
 **Git repo name (when initialized):** `defect-drainer-backend`
